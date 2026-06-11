@@ -31,7 +31,7 @@ MCP client -> stdio JSON-RPC -> jira-worklog-mcp -> HTTPS -> Jira Cloud REST v3
 | `jira_whoami` | Validates Jira authentication and returns the current identity when Jira allows it. |
 | `jira_search_issues` | Searches issues. No args returns your open issues; `query` does text search; `jql` runs raw JQL. |
 | `jira_resolve_daily_issue` | Resolves a daily issue using `JIRA_DAILY_SEARCH_TEXT` and optional `JIRA_DAILY_PROJECT`. |
-| `jira_ensure_person_daily` | Checks whether a `<person> <month> de <year>` issue exists on the GREDOM board for the given month/year. Creates it and assigns it to the current user if not found. Triggered by the terms `daily` or `dayli`. |
+| `jira_ensure_person_daily` | Checks whether a `<person> <month> de <year>` issue exists on the <especifico> board for the given month/year. Creates it and assigns it to the current user if not found. Triggered by the terms `daily` or `dayli`. |
 | `jira_log_work` | Logs one worklog. `time_spent` accepts `2:40` or `1h 30m`. |
 | `jira_log_work_batch` | Logs multiple worklogs in one call. Useful for time-sheet rows. |
 | `jira_get_worklogs` | Lists worklogs from an issue. `mine_only` filters your entries when identity is available. |
