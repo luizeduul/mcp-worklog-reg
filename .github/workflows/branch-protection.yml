@@ -6,12 +6,10 @@ on:
 jobs:
   protect:
     runs-on: ubuntu-latest
-    permissions:
-      administration: write
     steps:
       - name: Apply protection to main
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           gh api \
             --method PUT \
