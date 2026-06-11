@@ -1,7 +1,7 @@
 [project]
 name = "jira-worklog-mcp"
 version = "0.1.0"
-description = "MCP server para lançar e conferir horas (worklog) no Jira Cloud."
+description = "MCP server for logging and checking Jira Cloud worklogs."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

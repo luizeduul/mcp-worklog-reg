@@ -1,4 +1,4 @@
-"""Cliente HTTP do Jira Cloud REST v3. Não sabe nada de MCP."""
+"""HTTP client for Jira Cloud REST v3. This module does not know about MCP."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ JIRA_API = "/rest/api/3"
 
 
 class JiraError(Exception):
-    """Erro tratado do Jira, com mensagem amigável para o usuário."""
+    """Handled Jira error with a user-friendly message."""
 
     def __init__(self, message: str, status: int | None = None, detail: str | None = None):
         super().__init__(message)
@@ -24,9 +24,7 @@ class JiraError(Exception):
 class JiraClient:
     def __init__(self, base_url: str, email: str, api_token: str, timeout: float = 30.0):
         if not (base_url and email and api_token):
-            raise JiraError(
-                "JIRA_BASE_URL, JIRA_EMAIL e JIRA_API_TOKEN precisam estar definidos."
-            )
+            raise JiraError("JIRA_BASE_URL, JIRA_EMAIL, and JIRA_API_TOKEN must be set.")
         self.base_url = base_url.rstrip("/")
         self.email = email
         token = base64.b64encode(f"{email}:{api_token}".encode()).decode()
@@ -45,8 +43,6 @@ class JiraClient:
             api_token=os.getenv("JIRA_API_TOKEN", ""),
         )
 
-    # -- núcleo HTTP -------------------------------------------------------
-
     def _request(
         self,
         method: str,
@@ -57,7 +53,7 @@ class JiraClient:
     ) -> Any:
         url = f"{self.base_url}{path}"
         try:
-            resp = httpx.request(
+            response = httpx.request(
                 method,
                 url,
                 headers=self._headers,
@@ -65,70 +61,67 @@ class JiraClient:
                 params=params,
                 timeout=self._timeout,
             )
-        except httpx.HTTPError as e:
-            raise JiraError("Falha de rede ao acessar o Jira.", detail=str(e))
-        if resp.status_code >= 400:
-            raise self._map_error(resp)
-        if resp.status_code == 204:
+        except httpx.HTTPError as exc:
+            raise JiraError("Network failure while accessing Jira.", detail=str(exc))
+        if response.status_code >= 400:
+            raise self._map_error(response)
+        if response.status_code == 204:
             return None
-        if not resp.content:
+        if not response.content:
             raise JiraError(
-                f"Jira retornou resposta vazia com HTTP {resp.status_code}.",
-                status=resp.status_code,
+                f"Jira returned an empty response with HTTP {response.status_code}.",
+                status=response.status_code,
             )
-        return resp.json()
+        return response.json()
 
-    def _map_error(self, resp: httpx.Response) -> JiraError:
-        status = resp.status_code
-        detail = self._extract_detail(resp)
+    def _map_error(self, response: httpx.Response) -> JiraError:
+        status = response.status_code
+        detail = self._extract_detail(response)
         if status == 401:
-            msg = "Token inválido ou expirado. Gere um novo em id.atlassian.com."
+            message = "Invalid or expired token. Generate a new one at id.atlassian.com."
         elif status == 403:
-            msg = "Sem permissão. Confira os scopes do token."
+            message = "Missing permission. Check the token scopes and Jira permissions."
         elif status == 404:
-            msg = "Recurso não encontrado (issue inexistente ou sem acesso)."
+            message = "Resource not found, or the current account cannot access it."
         elif status == 400:
-            msg = "Requisição inválida (cheque formato dos dados)."
+            message = "Invalid request. Check the data format."
         else:
-            msg = f"Jira retornou HTTP {status}."
-        return JiraError(msg, status=status, detail=detail)
+            message = f"Jira returned HTTP {status}."
+        return JiraError(message, status=status, detail=detail)
 
     @staticmethod
-    def _extract_detail(resp: httpx.Response) -> str:
+    def _extract_detail(response: httpx.Response) -> str:
         try:
-            data = resp.json()
+            data = response.json()
         except Exception:
-            return resp.text[:300]
+            return response.text[:300]
         if isinstance(data, dict):
-            msgs = data.get("errorMessages") or []
-            errs = data.get("errors") or {}
-            partes = list(msgs) + [f"{k}: {v}" for k, v in errs.items()]
-            if partes:
-                return "; ".join(partes)
+            messages = data.get("errorMessages") or []
+            errors = data.get("errors") or {}
+            parts = list(messages) + [f"{key}: {value}" for key, value in errors.items()]
+            if parts:
+                return "; ".join(parts)
         return str(data)[:300]
-
-    # -- endpoints ---------------------------------------------------------
 
     def current_user(self) -> dict[str, Any] | None:
         """
-        Identidade do usuário atual (accountId/displayName).
+        Return the current user identity when Jira exposes it.
 
-        `/myself` funciona com token de API clássico. Token com scopes NÃO acessa
-        `/myself` (401, exige scope de conta) — então cai para `user/search` pelo
-        email. Como o Atlassian esconde email por padrão, isso pode vir vazio:
-        retorna None nesse caso (identidade indisponível, não é erro).
+        Classic API tokens can usually access /myself. Scoped tokens may receive
+        401 there, so the client falls back to user/search by email. Atlassian can
+        hide email addresses, in which case None means identity is unavailable.
         """
         try:
             return self._request("GET", f"{JIRA_API}/myself")
-        except JiraError as e:
-            if e.status != 401:
+        except JiraError as exc:
+            if exc.status != 401:
                 raise
         results = self._request(
             "GET", f"{JIRA_API}/user/search", params={"query": self.email}
         )
-        for usr in results or []:
-            if (usr.get("emailAddress") or "").lower() == self.email.lower():
-                return usr
+        for user in results or []:
+            if (user.get("emailAddress") or "").lower() == self.email.lower():
+                return user
         return results[0] if results else None
 
     def log_work(
@@ -164,3 +157,28 @@ class JiraClient:
             "DELETE", f"{JIRA_API}/issue/{issue_key}/worklog/{worklog_id}"
         )
         return {"deleted": worklog_id}
+
+    def search_projects(self, query: str) -> list[dict[str, Any]]:
+        """Search projects by name/key fragment."""
+        data = self._request(
+            "GET",
+            f"{JIRA_API}/project/search",
+            params={"query": query, "maxResults": 10},
+        )
+        return data.get("values", []) if isinstance(data, dict) else []
+
+    def create_issue(
+        self,
+        project_key: str,
+        summary: str,
+        issue_type: str = "Task",
+        assignee_account_id: str | None = None,
+    ) -> dict[str, Any]:
+        fields: dict[str, Any] = {
+            "project": {"key": project_key},
+            "summary": summary,
+            "issuetype": {"name": issue_type},
+        }
+        if assignee_account_id:
+            fields["assignee"] = {"accountId": assignee_account_id}
+        return self._request("POST", f"{JIRA_API}/issue", json_body={"fields": fields})

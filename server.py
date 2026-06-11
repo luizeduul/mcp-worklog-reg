@@ -1,16 +1,18 @@
 """
-MCP server para lançar e conferir horas (worklog) no Jira Cloud.
+MCP server for logging and checking Jira Cloud worklogs.
 
 Tools:
-- jira_whoami:           confirma auth, retorna usuário atual.
-- jira_search_issues:    acha issue keys (minhas abertas / texto livre / JQL).
-- jira_log_work:         lança 1 worklog.
-- jira_log_work_batch:   lança N worklogs (fluxo da planilha), reporta por linha.
-- jira_get_worklogs:     lista worklogs de uma issue.
-- jira_delete_worklog:   apaga um worklog (requer scope delete:issue-worklog:jira).
+- jira_whoami: confirms auth and returns the current user when available.
+- jira_search_issues: finds issue keys from open issues, free text, or raw JQL.
+- jira_resolve_daily_issue: finds the daily issue using an env text/template.
+- jira_log_work: logs one worklog.
+- jira_log_work_batch: logs multiple worklogs and reports each row result.
+- jira_get_worklogs: lists worklogs from one issue.
+- jira_delete_worklog: deletes one worklog.
 
-Config (env, lidas do .env ao lado deste arquivo ou passadas pelo cliente MCP):
-JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN, JIRA_DAILY_PROJECT (opcional, default GREDOM).
+Config, loaded from .env next to this file or from the MCP client env:
+JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN, JIRA_DAILY_SEARCH_TEXT (optional),
+JIRA_DAILY_PROJECT (optional).
 """
 
 from __future__ import annotations
@@ -27,66 +29,149 @@ from pydantic import Field
 
 from jira_client import JiraClient, JiraError
 
-# Carrega .env ao lado deste arquivo, independente do CWD do cliente MCP.
+# Load .env beside this file, independent of the MCP client's working directory.
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
 mcp = FastMCP("JiraWorklogMCP", log_level="ERROR")
 
 _HHMM_RE = re.compile(r"^(\d+):([0-5]\d)$")
-_JIRA_DUR_RE = re.compile(r"(\d+)\s*([hm])")
-
-
-# ---------------------------------------------------------------------------
-# Helpers de conversão (puros — testáveis sem rede)
-# ---------------------------------------------------------------------------
+_JIRA_DURATION_RE = re.compile(r"(\d+)\s*([hm])")
+_MONTH_NAMES_EN = (
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
+)
+_MONTH_NAMES_PT = (
+    "janeiro",
+    "fevereiro",
+    "marco",
+    "abril",
+    "maio",
+    "junho",
+    "julho",
+    "agosto",
+    "setembro",
+    "outubro",
+    "novembro",
+    "dezembro",
+)
 
 
 def parse_time_spent(value: str) -> int:
-    """Converte '2:40' (H:MM) ou '1h 30m' / '45m' / '2h' em segundos."""
+    """Convert '2:40' (H:MM), '1h 30m', '45m', or '2h' to seconds."""
     value = (value or "").strip()
-    m = _HHMM_RE.match(value)
-    if m:
-        secs = (int(m.group(1)) * 60 + int(m.group(2))) * 60
+    match = _HHMM_RE.match(value)
+    if match:
+        seconds = (int(match.group(1)) * 60 + int(match.group(2))) * 60
     else:
-        total = 0
-        achou = False
-        for num, unit in _JIRA_DUR_RE.findall(value.lower()):
-            achou = True
-            total += int(num) * (3600 if unit == "h" else 60)
-        if not achou:
+        total_seconds = 0
+        found_duration = False
+        for amount, unit in _JIRA_DURATION_RE.findall(value.lower()):
+            found_duration = True
+            total_seconds += int(amount) * (3600 if unit == "h" else 60)
+        if not found_duration:
             raise ValueError(
-                f"Tempo inválido: '{value}'. Use 'H:MM' (ex. '2:40') ou '1h 30m'."
+                f"Invalid time value: '{value}'. Use 'H:MM' (for example '2:40') "
+                "or '1h 30m'."
             )
-        secs = total
-    if secs <= 0:
-        raise ValueError("Tempo deve ser maior que zero.")
-    return secs
+        seconds = total_seconds
+    if seconds <= 0:
+        raise ValueError("Time spent must be greater than zero.")
+    return seconds
 
 
 def to_jira_datetime(value: str) -> str:
     """
-    Converte 'AAAA-MM-DD' ou 'AAAA-MM-DD HH:MM[:SS]' no formato do Jira
-    (yyyy-MM-ddTHH:mm:ss.SSSZ com offset local, ex. ...-0300).
+    Convert 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM[:SS]' to Jira's datetime format
+    with the local machine offset.
     """
     value = (value or "").strip()
-    dt = None
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+    parsed_datetime = None
+    for date_format in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
         try:
-            dt = datetime.strptime(value, fmt)
+            parsed_datetime = datetime.strptime(value, date_format)
             break
         except ValueError:
             continue
-    if dt is None:
+    if parsed_datetime is None:
         raise ValueError(
-            f"Data/hora inválida: '{value}'. Use 'AAAA-MM-DD' ou 'AAAA-MM-DD HH:MM'."
+            f"Invalid date/time: '{value}'. Use 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM'."
         )
-    local = dt.astimezone()  # naive → assume fuso local da máquina
-    millis = f"{local.microsecond // 1000:03d}"
-    return local.strftime("%Y-%m-%dT%H:%M:%S.") + millis + local.strftime("%z")
+    local_datetime = parsed_datetime.astimezone()
+    milliseconds = f"{local_datetime.microsecond // 1000:03d}"
+    return (
+        local_datetime.strftime("%Y-%m-%dT%H:%M:%S.")
+        + milliseconds
+        + local_datetime.strftime("%z")
+    )
+
+
+def _parse_reference_date(value: str) -> datetime:
+    value = (value or "").strip()
+    if not value:
+        return datetime.now()
+    for date_format in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(value, date_format)
+        except ValueError:
+            continue
+    raise ValueError(
+        f"Invalid date/time: '{value}'. Use 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM'."
+    )
+
+
+def render_daily_search_text(reference_date: str = "") -> str:
+    """
+    Render JIRA_DAILY_SEARCH_TEXT for the provided reference date.
+
+    Supported placeholders: {date}, {year}, {month}, {month_number},
+    {month_name_en}, {month_name_pt}.
+    """
+    template = (os.getenv("JIRA_DAILY_SEARCH_TEXT") or "").strip()
+    if not template:
+        raise ValueError("JIRA_DAILY_SEARCH_TEXT must be set to resolve daily issues.")
+    reference_datetime = _parse_reference_date(reference_date)
+    values = {
+        "date": reference_datetime.strftime("%Y-%m-%d"),
+        "year": reference_datetime.strftime("%Y"),
+        "month": f"{reference_datetime.month:02d}",
+        "month_number": str(reference_datetime.month),
+        "month_name_en": _MONTH_NAMES_EN[reference_datetime.month - 1],
+        "month_name_pt": _MONTH_NAMES_PT[reference_datetime.month - 1],
+    }
+    try:
+        return template.format(**values).strip()
+    except KeyError as exc:
+        raise ValueError(
+            f"Invalid placeholder in JIRA_DAILY_SEARCH_TEXT: {{{exc.args[0]}}}."
+        )
+
+
+def _escape_jql_text(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def build_daily_jql(reference_date: str = "") -> tuple[str, str]:
+    search_text = render_daily_search_text(reference_date)
+    project_key = (os.getenv("JIRA_DAILY_PROJECT") or "").strip()
+    clauses = []
+    if project_key:
+        clauses.append(f'project = "{_escape_jql_text(project_key)}"')
+    clauses.append(f'text ~ "{_escape_jql_text(search_text)}"')
+    return " AND ".join(clauses) + " ORDER BY updated DESC", search_text
 
 
 def build_adf_comment(text: str) -> dict[str, Any]:
-    """Monta um comentário ADF (Atlassian Document Format) de um parágrafo."""
+    """Build a one-paragraph ADF comment."""
     return {
         "type": "doc",
         "version": 1,
@@ -97,55 +182,45 @@ def build_adf_comment(text: str) -> dict[str, Any]:
 
 
 def _adf_to_text(adf: Any) -> str:
-    """Extrai texto plano de um comentário ADF (best-effort)."""
+    """Best-effort plain text extraction from an ADF comment."""
     if not isinstance(adf, dict):
         return ""
-    partes: list[str] = []
+    parts: list[str] = []
 
     def walk(node: Any) -> None:
         if isinstance(node, dict):
             if node.get("type") == "text" and isinstance(node.get("text"), str):
-                partes.append(node["text"])
+                parts.append(node["text"])
             for child in node.get("content", []) or []:
                 walk(child)
 
     walk(adf)
-    return " ".join(partes).strip()
+    return " ".join(parts).strip()
 
 
-def _erro(e: Exception) -> dict[str, Any]:
-    """Formata exceção como saída estruturada (nunca stacktrace cru)."""
-    if isinstance(e, JiraError):
-        out: dict[str, Any] = {"erro": e.message}
-        if e.detail:
-            out["detalhe"] = e.detail
-        return out
-    return {"erro": str(e)}
+def _error(exc: Exception) -> dict[str, Any]:
+    """Format handled exceptions as structured output."""
+    if isinstance(exc, JiraError):
+        output: dict[str, Any] = {"error": exc.message}
+        if exc.detail:
+            output["detail"] = exc.detail
+        return output
+    return {"error": str(exc)}
 
 
 def _client() -> JiraClient:
-    """Instancia o client por chamada (lazy) — importar este módulo não exige env."""
+    """Create the Jira client lazily so importing this module does not require env."""
     return JiraClient.from_env()
-
-
-# ---------------------------------------------------------------------------
-# Tools MCP
-# ---------------------------------------------------------------------------
 
 
 @mcp.tool(
     name="jira_whoami",
-    description="Confirma que a autenticação no Jira funciona. Retorna a identidade quando o token permite.",
+    description="Checks whether Jira authentication works and returns identity when available.",
 )
 def jira_whoami() -> dict[str, Any]:
     """
-    QUANDO USAR
-    - Validar que JIRA_BASE_URL/EMAIL/API_TOKEN estão certos antes de lançar horas.
-
-    SAIDA
-    - {ok, accountId, displayName, emailAddress} quando a identidade é acessível
-      (token clássico), OU {ok, identidade, nota} quando o token tem scopes e o
-      Jira não expõe /myself (auth é validada por uma busca). {erro} em falha real.
+    Use this before logging work to validate JIRA_BASE_URL, JIRA_EMAIL, and
+    JIRA_API_TOKEN.
     """
     try:
         client = _client()
@@ -157,46 +232,38 @@ def jira_whoami() -> dict[str, Any]:
                 "displayName": user.get("displayName"),
                 "emailAddress": user.get("emailAddress"),
             }
-        # Token com scopes não expõe identidade: confirma a auth com uma busca real.
         client.search_issues("assignee = currentUser() ORDER BY updated DESC", 1)
         return {
             "ok": True,
-            "identidade": os.getenv("JIRA_EMAIL"),
-            "nota": (
-                "Token com scopes não acessa /myself; identidade vem da config "
-                "(JIRA_EMAIL). Auth validada via busca."
+            "identity": os.getenv("JIRA_EMAIL"),
+            "note": (
+                "This token cannot access /myself; identity comes from JIRA_EMAIL. "
+                "Auth was validated with an issue search."
             ),
         }
-    except (JiraError, ValueError) as e:
-        return _erro(e)
+    except (JiraError, ValueError) as exc:
+        return _error(exc)
 
 
 @mcp.tool(
     name="jira_search_issues",
     description=(
-        "Acha issues do Jira. Sem args: minhas issues abertas. 'query': texto livre. "
-        "'jql': JQL cru (avançado)."
+        "Finds Jira issues. No args: current user's open issues. "
+        "'query': free text. 'jql': raw JQL."
     ),
 )
 def jira_search_issues(
-    query: Annotated[str, Field(description="Texto livre. Vira: text ~ \"<query>\".")] = "",
-    jql: Annotated[str, Field(description="JQL cru. Tem prioridade sobre query.")] = "",
-    max_results: Annotated[int, Field(description="Máximo de issues retornadas.")] = 20,
+    query: Annotated[str, Field(description='Free text. Becomes: text ~ "<query>".')] = "",
+    jql: Annotated[str, Field(description="Raw JQL. Takes priority over query.")] = "",
+    max_results: Annotated[int, Field(description="Maximum returned issues.")] = 20,
 ) -> dict[str, Any]:
-    """
-    QUANDO USAR
-    - Descobrir a key de uma issue antes de lançar hora.
-    - Resolver a tarefa mensal do daily: jql='project = GREDOM AND summary ~ "Luiz junho 2026"'.
-
-    SAIDA
-    - jql (efetivo), count, issues: [{key, summary, status}]
-    """
+    """Find an issue key before logging work, or run direct free-text/JQL searches."""
     try:
         if (jql or "").strip():
             final_jql = jql.strip()
         elif (query or "").strip():
-            safe = query.strip().replace('"', '\\"')
-            final_jql = f'text ~ "{safe}" ORDER BY updated DESC'
+            safe_query = query.strip().replace('"', '\\"')
+            final_jql = f'text ~ "{safe_query}" ORDER BY updated DESC'
         else:
             final_jql = (
                 "assignee = currentUser() AND statusCategory != Done "
@@ -204,23 +271,58 @@ def jira_search_issues(
             )
         data = _client().search_issues(final_jql, max_results)
         issues = []
-        for it in data.get("issues", []):
-            fields = it.get("fields") or {}
+        for item in data.get("issues", []):
+            fields = item.get("fields") or {}
             status = fields.get("status") or {}
             issues.append(
                 {
-                    "key": it.get("key"),
+                    "key": item.get("key"),
                     "summary": fields.get("summary"),
                     "status": status.get("name"),
                 }
             )
         return {"jql": final_jql, "count": len(issues), "issues": issues}
-    except (JiraError, ValueError) as e:
-        return _erro(e)
+    except (JiraError, ValueError) as exc:
+        return _error(exc)
 
 
-def _resolver_started(started: str) -> str:
-    """started informado → formato Jira; vazio → agora (fallback p/ log avulso)."""
+@mcp.tool(
+    name="jira_resolve_daily_issue",
+    description=(
+        "Finds the daily issue using JIRA_DAILY_SEARCH_TEXT as a search template "
+        "and JIRA_DAILY_PROJECT as an optional project filter."
+    ),
+)
+def jira_resolve_daily_issue(
+    reference_date: Annotated[str, Field(description="Reference date: 'YYYY-MM-DD'. Empty = today.")] = "",
+    max_results: Annotated[int, Field(description="Maximum returned issues.")] = 5,
+) -> dict[str, Any]:
+    """Resolve a daily row that does not include an explicit issue key."""
+    try:
+        final_jql, search_text = build_daily_jql(reference_date)
+        data = _client().search_issues(final_jql, max_results)
+        issues = []
+        for item in data.get("issues", []):
+            fields = item.get("fields") or {}
+            status = fields.get("status") or {}
+            issues.append(
+                {
+                    "key": item.get("key"),
+                    "summary": fields.get("summary"),
+                    "status": status.get("name"),
+                }
+            )
+        return {
+            "jql": final_jql,
+            "search_text": search_text,
+            "count": len(issues),
+            "issues": issues,
+        }
+    except (JiraError, ValueError) as exc:
+        return _error(exc)
+
+
+def _resolve_started(started: str) -> str:
     if (started or "").strip():
         return to_jira_datetime(started)
     return to_jira_datetime(datetime.now().strftime("%Y-%m-%d %H:%M"))
@@ -229,146 +331,195 @@ def _resolver_started(started: str) -> str:
 @mcp.tool(
     name="jira_log_work",
     description=(
-        "Lança 1 worklog numa issue. time_spent aceita 'H:MM' (ex. '2:40') ou "
-        "'1h 30m'. started: 'AAAA-MM-DD' ou 'AAAA-MM-DD HH:MM' (vazio = agora)."
+        "Logs one worklog. time_spent accepts 'H:MM' (for example '2:40') or "
+        "'1h 30m'. started: 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM' (empty = now)."
     ),
 )
 def jira_log_work(
-    issue_key: Annotated[str, Field(description="Key da issue, ex. ROTA-355, GAZIN-753.")],
-    time_spent: Annotated[str, Field(description="Duração: 'H:MM' (2:40) ou '1h 30m'.")],
-    started: Annotated[str, Field(description="Início: 'AAAA-MM-DD HH:MM'. Vazio = agora.")] = "",
-    comment: Annotated[str, Field(description="Comentário do worklog (vai pra task).")] = "",
+    issue_key: Annotated[str, Field(description="Issue key, for example PROJ-123.")],
+    time_spent: Annotated[str, Field(description="Duration: 'H:MM' or '1h 30m'.")],
+    started: Annotated[str, Field(description="Start: 'YYYY-MM-DD HH:MM'. Empty = now.")] = "",
+    comment: Annotated[str, Field(description="Worklog comment.")] = "",
 ) -> dict[str, Any]:
-    """
-    QUANDO USAR
-    - Lançar uma hora avulsa numa issue específica.
-
-    SAIDA
-    - id, issue_key, time_spent_seconds, started  (ou {erro, detalhe})
-    """
+    """Log one worklog in a specific issue."""
     try:
-        secs = parse_time_spent(time_spent)
-        started_jira = _resolver_started(started)
-        adf = build_adf_comment(comment) if (comment or "").strip() else None
-        res = _client().log_work(issue_key, secs, started_jira, adf)
+        seconds = parse_time_spent(time_spent)
+        started_jira = _resolve_started(started)
+        adf_comment = build_adf_comment(comment) if (comment or "").strip() else None
+        result = _client().log_work(issue_key, seconds, started_jira, adf_comment)
         return {
-            "id": res.get("id"),
+            "id": result.get("id"),
             "issue_key": issue_key,
-            "time_spent_seconds": secs,
+            "time_spent_seconds": seconds,
             "started": started_jira,
         }
-    except (JiraError, ValueError) as e:
-        return _erro(e)
+    except (JiraError, ValueError) as exc:
+        return _error(exc)
 
 
 @mcp.tool(
     name="jira_log_work_batch",
     description=(
-        "Lança N worklogs numa chamada (fluxo da planilha). entries: lista de "
-        "{issue_key, time_spent, started?, comment?}. Reporta sucesso/falha por linha."
+        "Logs multiple worklogs. entries: list of "
+        "{issue_key, time_spent, started?, comment?}. Reports each row result."
     ),
 )
 def jira_log_work_batch(
-    entries: Annotated[list[dict], Field(description="Lista de {issue_key, time_spent, started?, comment?}.")],
+    entries: Annotated[list[dict], Field(description="List of {issue_key, time_spent, started?, comment?}.")],
 ) -> dict[str, Any]:
-    """
-    QUANDO USAR
-    - Lançar um dia inteiro da planilha de uma vez (depois do preview confirmado).
-
-    SAIDA
-    - total, ok, failed, results: [{issue_key, ok, id?, started?, error?}]
-    """
+    """Log a full time-sheet preview after user confirmation."""
     client = _client()
     results: list[dict[str, Any]] = []
     for entry in entries:
-        key = entry.get("issue_key", "?")
+        issue_key = entry.get("issue_key", "?")
         try:
-            secs = parse_time_spent(entry["time_spent"])
-            started_jira = _resolver_started(entry.get("started", ""))
+            seconds = parse_time_spent(entry["time_spent"])
+            started_jira = _resolve_started(entry.get("started", ""))
             comment = entry.get("comment", "")
-            adf = build_adf_comment(comment) if (comment or "").strip() else None
-            res = client.log_work(entry["issue_key"], secs, started_jira, adf)
+            adf_comment = build_adf_comment(comment) if (comment or "").strip() else None
+            result = client.log_work(entry["issue_key"], seconds, started_jira, adf_comment)
             results.append(
-                {"issue_key": key, "ok": True, "id": res.get("id"), "started": started_jira}
+                {
+                    "issue_key": issue_key,
+                    "ok": True,
+                    "id": result.get("id"),
+                    "started": started_jira,
+                }
             )
-        except (JiraError, ValueError, KeyError) as e:
-            results.append({"issue_key": key, "ok": False, "error": str(e)})
-    ok = sum(1 for r in results if r["ok"])
-    return {"total": len(results), "ok": ok, "failed": len(results) - ok, "results": results}
+        except (JiraError, ValueError, KeyError) as exc:
+            results.append({"issue_key": issue_key, "ok": False, "error": str(exc)})
+    ok_count = sum(1 for result in results if result["ok"])
+    return {
+        "total": len(results),
+        "ok": ok_count,
+        "failed": len(results) - ok_count,
+        "results": results,
+    }
 
 
 @mcp.tool(
     name="jira_get_worklogs",
-    description="Lista os worklogs de uma issue. mine_only filtra os do usuário atual.",
+    description="Lists worklogs from one issue. mine_only filters current user's worklogs.",
 )
 def jira_get_worklogs(
-    issue_key: Annotated[str, Field(description="Key da issue.")],
-    mine_only: Annotated[bool, Field(description="Só os meus worklogs.")] = False,
+    issue_key: Annotated[str, Field(description="Issue key.")],
+    mine_only: Annotated[bool, Field(description="Only my worklogs.")] = False,
 ) -> dict[str, Any]:
-    """
-    QUANDO USAR
-    - Conferir o que foi lançado numa issue (validar o lançamento).
-
-    SAIDA
-    - count, worklogs: [{id, author, time_spent, started, comment}]
-    """
+    """Check what was logged in an issue."""
     try:
         client = _client()
         data = client.get_worklogs(issue_key)
-        me = None
-        nota = None
+        current_account_id = None
+        note = None
         if mine_only:
             user = client.current_user()
-            me = user.get("accountId") if user else None
-            if me is None:
-                nota = (
-                    "mine_only ignorado: identidade indisponível para token com "
-                    "scopes (/myself bloqueado)."
-                )
-        out = []
-        for w in data.get("worklogs", []):
-            author = w.get("author") or {}
-            if mine_only and me is not None and author.get("accountId") != me:
+            current_account_id = user.get("accountId") if user else None
+            if current_account_id is None:
+                note = "mine_only ignored: current user identity is unavailable."
+        worklogs = []
+        for worklog in data.get("worklogs", []):
+            author = worklog.get("author") or {}
+            if (
+                mine_only
+                and current_account_id is not None
+                and author.get("accountId") != current_account_id
+            ):
                 continue
-            out.append(
+            worklogs.append(
                 {
-                    "id": w.get("id"),
+                    "id": worklog.get("id"),
                     "author": author.get("displayName"),
-                    "time_spent": w.get("timeSpent"),
-                    "started": w.get("started"),
-                    "comment": _adf_to_text(w.get("comment")),
+                    "time_spent": worklog.get("timeSpent"),
+                    "started": worklog.get("started"),
+                    "comment": _adf_to_text(worklog.get("comment")),
                 }
             )
-        res = {"issue_key": issue_key, "count": len(out), "worklogs": out}
-        if nota:
-            res["nota"] = nota
-        return res
-    except (JiraError, ValueError) as e:
-        return _erro(e)
+        output = {"issue_key": issue_key, "count": len(worklogs), "worklogs": worklogs}
+        if note:
+            output["note"] = note
+        return output
+    except (JiraError, ValueError) as exc:
+        return _error(exc)
 
 
 @mcp.tool(
     name="jira_delete_worklog",
-    description=(
-        "Apaga um worklog. Requer scope delete:issue-worklog:jira no token "
-        "(senão retorna erro de permissão)."
-    ),
+    description="Deletes one worklog. Requires permission to delete Jira worklogs.",
 )
 def jira_delete_worklog(
-    issue_key: Annotated[str, Field(description="Key da issue.")],
-    worklog_id: Annotated[str, Field(description="ID do worklog (de jira_get_worklogs).")],
+    issue_key: Annotated[str, Field(description="Issue key.")],
+    worklog_id: Annotated[str, Field(description="Worklog ID from jira_get_worklogs.")],
 ) -> dict[str, Any]:
-    """
-    QUANDO USAR
-    - Desfazer um lançamento errado.
-
-    SAIDA
-    - deleted: <worklog_id>  (ou {erro, detalhe})
-    """
+    """Delete a wrong worklog entry."""
     try:
         return _client().delete_worklog(issue_key, worklog_id)
-    except (JiraError, ValueError) as e:
-        return _erro(e)
+    except (JiraError, ValueError) as exc:
+        return _error(exc)
+
+
+@mcp.tool(
+    name="jira_ensure_person_daily",
+    description=(
+        "Checks whether a '<person> <month> de <year>' issue exists on the GREDOM board "
+        "for the given month/year. If not found, searches for the GREDOM project generically "
+        "and creates the issue, assigning it to the current user. "
+        "person_name defaults to JIRA_DAILY_PERSON_NAME env var. "
+        "Trigger this when the term 'daily' or 'dayli' is used."
+    ),
+)
+def jira_ensure_person_daily(
+    reference_date: Annotated[str, Field(description="Reference date 'YYYY-MM-DD'. Empty = today.")] = "",
+    person_name: Annotated[str, Field(description="Person name for the summary. Empty = JIRA_DAILY_PERSON_NAME env var.")] = "",
+) -> dict[str, Any]:
+    """Ensure the monthly person daily issue exists on the GREDOM board."""
+    try:
+        name = (person_name or "").strip() or (os.getenv("JIRA_DAILY_PERSON_NAME") or "").strip()
+        if not name:
+            return {"error": "person_name is required (or set JIRA_DAILY_PERSON_NAME in env)."}
+
+        ref = _parse_reference_date(reference_date)
+        month_name_pt = _MONTH_NAMES_PT[ref.month - 1]
+        year = ref.strftime("%Y")
+        expected_summary = f"{name} {month_name_pt} de {year}"
+
+        client = _client()
+
+        # Search for existing issue
+        safe = _escape_jql_text(expected_summary)
+        jql = f'text ~ "{safe}" ORDER BY created DESC'
+        data = client.search_issues(jql, max_results=5)
+        issues = [
+            {
+                "key": item.get("key"),
+                "summary": (item.get("fields") or {}).get("summary"),
+            }
+            for item in data.get("issues", [])
+        ]
+        if issues:
+            return {"found": True, "summary": expected_summary, "issues": issues}
+
+        # Not found — locate GREDOM project
+        projects = client.search_projects("GREDOM")
+        if not projects:
+            return {"error": "GREDOM project not found via search."}
+        project_key = projects[0]["key"]
+
+        # Resolve current user for assignee
+        user = client.current_user()
+        assignee_id = user.get("accountId") if user else None
+
+        # Create the issue
+        created = client.create_issue(project_key, expected_summary, assignee_account_id=assignee_id)
+        return {
+            "found": False,
+            "created": True,
+            "key": created.get("key"),
+            "summary": expected_summary,
+            "project": project_key,
+            "assignee": assignee_id,
+        }
+    except (JiraError, ValueError) as exc:
+        return _error(exc)
 
 
 if __name__ == "__main__":
