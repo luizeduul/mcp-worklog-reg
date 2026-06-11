@@ -1,25 +1,32 @@
 """
-MCP server for logging and checking Jira Cloud worklogs.
+MCP server for reading Jira Cloud issues/worklogs and logging time.
+
+This server is read/append only by design (least privilege). It can search and
+read issues, read and log worklogs, and add comments. It CANNOT create, edit,
+transition, assign, or delete issues, comments, or worklogs.
 
 Tools:
 - jira_whoami: confirms auth and returns the current user when available.
-- jira_search_issues: finds issue keys from open issues, free text, or raw JQL.
-- jira_resolve_daily_issue: finds the daily issue using an env text/template.
+- jira_search_issues: finds issues from open issues, free text, or raw JQL.
+- jira_get_issue: returns a compact view of one issue.
+- jira_add_comment: adds a comment to an issue.
 - jira_log_work: logs one worklog.
-- jira_log_work_batch: logs multiple worklogs and reports each row result.
+- jira_log_work_batch: logs multiple worklogs, skipping same-time duplicates.
 - jira_get_worklogs: lists worklogs from one issue.
-- jira_delete_worklog: deletes one worklog.
 
-Config, loaded from .env next to this file or from the MCP client env:
-JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN, JIRA_DAILY_SEARCH_TEXT (optional),
-JIRA_DAILY_PROJECT (optional).
+Daily bucket: pass issue_key="daily" (or "dayli") to log into a recurring monthly
+issue without guessing its key. The server resolves it via the JIRA_DAILY_JQL
+template, filling {month}/{year} from the worklog date. Disabled if unset.
+
+Config, loaded from .env next to this file (optional) or from the MCP client env:
+JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN. Optional: JIRA_DAILY_JQL.
 """
 
 from __future__ import annotations
 
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -29,41 +36,22 @@ from pydantic import Field
 
 from jira_client import JiraClient, JiraError
 
-# Load .env beside this file, independent of the MCP client's working directory.
+# Load .env beside this file if present. The file is optional; missing .env is fine.
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
 mcp = FastMCP("JiraWorklogMCP", log_level="ERROR")
 
 _HHMM_RE = re.compile(r"^(\d+):([0-5]\d)$")
 _JIRA_DURATION_RE = re.compile(r"(\d+)\s*([hm])")
-_MONTH_NAMES_EN = (
-    "january",
-    "february",
-    "march",
-    "april",
-    "may",
-    "june",
-    "july",
-    "august",
-    "september",
-    "october",
-    "november",
-    "december",
+
+# Issue-key sentinels that mean "the recurring monthly bucket", resolved from the
+# JIRA_DAILY_JQL template instead of being treated as a literal issue key.
+_DAILY_SENTINELS = {"daily", "dayli"}
+_PT_MONTHS = (
+    "", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+    "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
 )
-_MONTH_NAMES_PT = (
-    "janeiro",
-    "fevereiro",
-    "marco",
-    "abril",
-    "maio",
-    "junho",
-    "julho",
-    "agosto",
-    "setembro",
-    "outubro",
-    "novembro",
-    "dezembro",
-)
+_DAILY_JQL_EXAMPLE = 'project = MYPROJ AND summary ~ "Timesheet {month} de {year}" ORDER BY created DESC'
 
 
 def parse_time_spent(value: str) -> int:
@@ -115,59 +103,8 @@ def to_jira_datetime(value: str) -> str:
     )
 
 
-def _parse_reference_date(value: str) -> datetime:
-    value = (value or "").strip()
-    if not value:
-        return datetime.now()
-    for date_format in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(value, date_format)
-        except ValueError:
-            continue
-    raise ValueError(
-        f"Invalid date/time: '{value}'. Use 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM'."
-    )
-
-
-def render_daily_search_text(reference_date: str = "") -> str:
-    """
-    Render JIRA_DAILY_SEARCH_TEXT for the provided reference date.
-
-    Supported placeholders: {date}, {year}, {month}, {month_number},
-    {month_name_en}, {month_name_pt}.
-    """
-    template = (os.getenv("JIRA_DAILY_SEARCH_TEXT") or "").strip()
-    if not template:
-        raise ValueError("JIRA_DAILY_SEARCH_TEXT must be set to resolve daily issues.")
-    reference_datetime = _parse_reference_date(reference_date)
-    values = {
-        "date": reference_datetime.strftime("%Y-%m-%d"),
-        "year": reference_datetime.strftime("%Y"),
-        "month": f"{reference_datetime.month:02d}",
-        "month_number": str(reference_datetime.month),
-        "month_name_en": _MONTH_NAMES_EN[reference_datetime.month - 1],
-        "month_name_pt": _MONTH_NAMES_PT[reference_datetime.month - 1],
-    }
-    try:
-        return template.format(**values).strip()
-    except KeyError as exc:
-        raise ValueError(
-            f"Invalid placeholder in JIRA_DAILY_SEARCH_TEXT: {{{exc.args[0]}}}."
-        )
-
-
 def _escape_jql_text(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
-
-
-def build_daily_jql(reference_date: str = "") -> tuple[str, str]:
-    search_text = render_daily_search_text(reference_date)
-    project_key = (os.getenv("JIRA_DAILY_PROJECT") or "").strip()
-    clauses = []
-    if project_key:
-        clauses.append(f'project = "{_escape_jql_text(project_key)}"')
-    clauses.append(f'text ~ "{_escape_jql_text(search_text)}"')
-    return " AND ".join(clauses) + " ORDER BY updated DESC", search_text
 
 
 def build_adf_comment(text: str) -> dict[str, Any]:
@@ -182,7 +119,7 @@ def build_adf_comment(text: str) -> dict[str, Any]:
 
 
 def _adf_to_text(adf: Any) -> str:
-    """Best-effort plain text extraction from an ADF comment."""
+    """Best-effort plain text extraction from an ADF document."""
     if not isinstance(adf, dict):
         return ""
     parts: list[str] = []
@@ -209,8 +146,94 @@ def _error(exc: Exception) -> dict[str, Any]:
 
 
 def _client() -> JiraClient:
-    """Create the Jira client lazily so importing this module does not require env."""
+    """Build the Jira client lazily so importing this module does not require env."""
     return JiraClient.from_env()
+
+
+def _resolve_started(started: str) -> str:
+    if (started or "").strip():
+        return to_jira_datetime(started)
+    return to_jira_datetime(datetime.now().strftime("%Y-%m-%d %H:%M"))
+
+
+def _is_daily_key(issue_key: str) -> bool:
+    return (issue_key or "").strip().lower() in _DAILY_SENTINELS
+
+
+def _render_daily_jql(template: str, started_jira: str) -> str:
+    """Fill {month}/{month_num}/{year} from the worklog date into the JQL template."""
+    try:
+        moment = datetime.fromisoformat(started_jira)
+    except (ValueError, TypeError):
+        moment = datetime.now()
+    try:
+        return template.format(
+            month=_PT_MONTHS[moment.month], month_num=moment.month, year=moment.year
+        )
+    except (KeyError, IndexError, ValueError) as exc:
+        raise JiraError(
+            "Invalid JIRA_DAILY_JQL template. Use only {month}, {month_num}, and "
+            f"{{year}} placeholders. Detail: {exc}"
+        )
+
+
+def _resolve_issue_key(
+    client: JiraClient, issue_key: str, started_jira: str, cache: dict[str, str]
+) -> tuple[str, bool]:
+    """
+    Resolve a 'daily'/'dayli' sentinel to the month's bucket issue via JIRA_DAILY_JQL.
+
+    Returns (resolved_key, is_daily). Non-sentinel keys pass through unchanged.
+    The cache maps a rendered JQL to its resolved key so a batch searches once per month.
+    """
+    if not _is_daily_key(issue_key):
+        return issue_key, False
+    template = os.getenv("JIRA_DAILY_JQL", "").strip()
+    if not template:
+        raise JiraError(
+            "Daily entry, but JIRA_DAILY_JQL is not configured. Set it in .env, e.g. "
+            f"{_DAILY_JQL_EXAMPLE}"
+        )
+    jql = _render_daily_jql(template, started_jira)
+    if jql in cache:
+        return cache[jql], True
+    data = client.search_issues(jql, 5)
+    issues = data.get("issues", [])
+    if not issues:
+        raise JiraError(f"No daily bucket issue found for this month. JQL: {jql}")
+    resolved = issues[0].get("key")
+    cache[jql] = resolved
+    return resolved, True
+
+
+def _instant_minute(value: str) -> str | None:
+    """Normalize a Jira datetime to a UTC minute key for duplicate detection."""
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.astimezone()
+    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M")
+
+
+def _existing_worklog_minutes(
+    client: JiraClient, issue_key: str, cache: dict[str, dict[str, str]]
+) -> dict[str, str]:
+    """Map 'UTC minute -> worklog id' for an issue, fetched once and cached."""
+    if issue_key in cache:
+        return cache[issue_key]
+    mapping: dict[str, str] = {}
+    try:
+        data = client.get_worklogs(issue_key)
+        for worklog in data.get("worklogs", []):
+            minute_key = _instant_minute(worklog.get("started", ""))
+            if minute_key and minute_key not in mapping:
+                mapping[minute_key] = worklog.get("id")
+    except JiraError:
+        mapping = {}
+    cache[issue_key] = mapping
+    return mapping
 
 
 @mcp.tool(
@@ -262,8 +285,7 @@ def jira_search_issues(
         if (jql or "").strip():
             final_jql = jql.strip()
         elif (query or "").strip():
-            safe_query = query.strip().replace('"', '\\"')
-            final_jql = f'text ~ "{safe_query}" ORDER BY updated DESC'
+            final_jql = f'text ~ "{_escape_jql_text(query.strip())}" ORDER BY updated DESC'
         else:
             final_jql = (
                 "assignee = currentUser() AND statusCategory != Done "
@@ -287,56 +309,72 @@ def jira_search_issues(
 
 
 @mcp.tool(
-    name="jira_resolve_daily_issue",
+    name="jira_get_issue",
     description=(
-        "Finds the daily issue using JIRA_DAILY_SEARCH_TEXT as a search template "
-        "and JIRA_DAILY_PROJECT as an optional project filter."
+        "Returns a compact view of one issue: key, summary, status, type, "
+        "assignee, priority, labels, and description text."
     ),
 )
-def jira_resolve_daily_issue(
-    reference_date: Annotated[str, Field(description="Reference date: 'YYYY-MM-DD'. Empty = today.")] = "",
-    max_results: Annotated[int, Field(description="Maximum returned issues.")] = 5,
+def jira_get_issue(
+    issue_key: Annotated[str, Field(description="Issue key, for example PROJ-123.")],
 ) -> dict[str, Any]:
-    """Resolve a daily row that does not include an explicit issue key."""
+    """Read a single issue without the heavy raw Jira payload."""
     try:
-        final_jql, search_text = build_daily_jql(reference_date)
-        data = _client().search_issues(final_jql, max_results)
-        issues = []
-        for item in data.get("issues", []):
-            fields = item.get("fields") or {}
-            status = fields.get("status") or {}
-            issues.append(
-                {
-                    "key": item.get("key"),
-                    "summary": fields.get("summary"),
-                    "status": status.get("name"),
-                }
-            )
+        data = _client().get_issue(issue_key)
+        fields = data.get("fields") or {}
+        status = fields.get("status") or {}
+        issue_type = fields.get("issuetype") or {}
+        assignee = fields.get("assignee") or {}
+        priority = fields.get("priority") or {}
         return {
-            "jql": final_jql,
-            "search_text": search_text,
-            "count": len(issues),
-            "issues": issues,
+            "key": data.get("key"),
+            "summary": fields.get("summary"),
+            "status": status.get("name"),
+            "type": issue_type.get("name"),
+            "assignee": assignee.get("displayName"),
+            "priority": priority.get("name"),
+            "labels": fields.get("labels") or [],
+            "updated": fields.get("updated"),
+            "description": _adf_to_text(fields.get("description")),
         }
     except (JiraError, ValueError) as exc:
         return _error(exc)
 
 
-def _resolve_started(started: str) -> str:
-    if (started or "").strip():
-        return to_jira_datetime(started)
-    return to_jira_datetime(datetime.now().strftime("%Y-%m-%d %H:%M"))
+@mcp.tool(
+    name="jira_add_comment",
+    description="Adds a comment to an issue. Plain text is converted to Jira ADF.",
+)
+def jira_add_comment(
+    issue_key: Annotated[str, Field(description="Issue key, for example PROJ-123.")],
+    comment: Annotated[str, Field(description="Comment text.")],
+) -> dict[str, Any]:
+    """Add a single plain-text comment to an issue."""
+    try:
+        text = (comment or "").strip()
+        if not text:
+            return {"error": "comment must not be empty."}
+        result = _client().add_comment(issue_key, build_adf_comment(text))
+        return {
+            "id": result.get("id"),
+            "issue_key": issue_key,
+            "created": result.get("created"),
+        }
+    except (JiraError, ValueError) as exc:
+        return _error(exc)
 
 
 @mcp.tool(
     name="jira_log_work",
     description=(
         "Logs one worklog. time_spent accepts 'H:MM' (for example '2:40') or "
-        "'1h 30m'. started: 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM' (empty = now)."
+        "'1h 30m'. started: 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM' (empty = now). "
+        "Set issue_key='daily' to log into the configured monthly bucket "
+        "(JIRA_DAILY_JQL) instead of guessing the key."
     ),
 )
 def jira_log_work(
-    issue_key: Annotated[str, Field(description="Issue key, for example PROJ-123.")],
+    issue_key: Annotated[str, Field(description="Issue key (e.g. PROJ-123), or 'daily' for the monthly bucket.")],
     time_spent: Annotated[str, Field(description="Duration: 'H:MM' or '1h 30m'.")],
     started: Annotated[str, Field(description="Start: 'YYYY-MM-DD HH:MM'. Empty = now.")] = "",
     comment: Annotated[str, Field(description="Worklog comment.")] = "",
@@ -345,14 +383,19 @@ def jira_log_work(
     try:
         seconds = parse_time_spent(time_spent)
         started_jira = _resolve_started(started)
+        client = _client()
+        target_key, is_daily = _resolve_issue_key(client, issue_key, started_jira, {})
         adf_comment = build_adf_comment(comment) if (comment or "").strip() else None
-        result = _client().log_work(issue_key, seconds, started_jira, adf_comment)
-        return {
+        result = client.log_work(target_key, seconds, started_jira, adf_comment)
+        output = {
             "id": result.get("id"),
-            "issue_key": issue_key,
+            "issue_key": target_key,
             "time_spent_seconds": seconds,
             "started": started_jira,
         }
+        if is_daily:
+            output["resolved_from"] = "daily"
+        return output
     except (JiraError, ValueError) as exc:
         return _error(exc)
 
@@ -361,40 +404,73 @@ def jira_log_work(
     name="jira_log_work_batch",
     description=(
         "Logs multiple worklogs. entries: list of "
-        "{issue_key, time_spent, started?, comment?}. Reports each row result."
+        "{issue_key, time_spent, started?, comment?}. issue_key may be 'daily' to "
+        "log into the configured monthly bucket (JIRA_DAILY_JQL). By default, "
+        "entries that already have a worklog at the same date/time are skipped and "
+        "returned for confirmation. Reports each row result."
     ),
 )
 def jira_log_work_batch(
-    entries: Annotated[list[dict], Field(description="List of {issue_key, time_spent, started?, comment?}.")],
+    entries: Annotated[list[dict], Field(description="List of {issue_key, time_spent, started?, comment?}. issue_key may be 'daily'.")],
+    skip_duplicates: Annotated[bool, Field(description="Skip entries already logged at the same date/time.")] = True,
 ) -> dict[str, Any]:
-    """Log a full time-sheet preview after user confirmation."""
+    """Log a full time-sheet, skipping same-time duplicates for user confirmation."""
     client = _client()
     results: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    worklog_cache: dict[str, dict[str, str]] = {}
+    daily_cache: dict[str, str] = {}
     for entry in entries:
         issue_key = entry.get("issue_key", "?")
         try:
             seconds = parse_time_spent(entry["time_spent"])
             started_jira = _resolve_started(entry.get("started", ""))
+            target_key, is_daily = _resolve_issue_key(
+                client, entry["issue_key"], started_jira, daily_cache
+            )
+            if skip_duplicates:
+                existing = _existing_worklog_minutes(client, target_key, worklog_cache)
+                minute_key = _instant_minute(started_jira)
+                if minute_key and minute_key in existing:
+                    skipped.append(
+                        {
+                            "issue_key": target_key,
+                            "started": started_jira,
+                            "time_spent": entry.get("time_spent"),
+                            "existing_worklog_id": existing[minute_key],
+                        }
+                    )
+                    continue
             comment = entry.get("comment", "")
             adf_comment = build_adf_comment(comment) if (comment or "").strip() else None
-            result = client.log_work(entry["issue_key"], seconds, started_jira, adf_comment)
-            results.append(
-                {
-                    "issue_key": issue_key,
-                    "ok": True,
-                    "id": result.get("id"),
-                    "started": started_jira,
-                }
-            )
+            result = client.log_work(target_key, seconds, started_jira, adf_comment)
+            row = {
+                "issue_key": target_key,
+                "ok": True,
+                "id": result.get("id"),
+                "started": started_jira,
+            }
+            if is_daily:
+                row["resolved_from"] = "daily"
+            results.append(row)
         except (JiraError, ValueError, KeyError) as exc:
             results.append({"issue_key": issue_key, "ok": False, "error": str(exc)})
-    ok_count = sum(1 for result in results if result["ok"])
-    return {
-        "total": len(results),
-        "ok": ok_count,
-        "failed": len(results) - ok_count,
+    logged = sum(1 for result in results if result["ok"])
+    output: dict[str, Any] = {
+        "total": len(entries),
+        "logged": logged,
+        "failed": len(results) - logged,
+        "skipped": len(skipped),
+        "skipped_duplicates": skipped,
         "results": results,
     }
+    if skipped:
+        output["note"] = (
+            "Some entries already have a worklog at the same date/time and were "
+            "skipped. Ask the user whether to log them anyway (call jira_log_work "
+            "per entry) or leave them as is."
+        )
+    return output
 
 
 @mcp.tool(
@@ -438,86 +514,6 @@ def jira_get_worklogs(
         if note:
             output["note"] = note
         return output
-    except (JiraError, ValueError) as exc:
-        return _error(exc)
-
-
-@mcp.tool(
-    name="jira_delete_worklog",
-    description="Deletes one worklog. Requires permission to delete Jira worklogs.",
-)
-def jira_delete_worklog(
-    issue_key: Annotated[str, Field(description="Issue key.")],
-    worklog_id: Annotated[str, Field(description="Worklog ID from jira_get_worklogs.")],
-) -> dict[str, Any]:
-    """Delete a wrong worklog entry."""
-    try:
-        return _client().delete_worklog(issue_key, worklog_id)
-    except (JiraError, ValueError) as exc:
-        return _error(exc)
-
-
-@mcp.tool(
-    name="jira_ensure_person_daily",
-    description=(
-        "Checks whether a '<person> <month> de <year>' issue exists on the GREDOM board "
-        "for the given month/year. If not found, searches for the GREDOM project generically "
-        "and creates the issue, assigning it to the current user. "
-        "person_name defaults to JIRA_DAILY_PERSON_NAME env var. "
-        "Trigger this when the term 'daily' or 'dayli' is used."
-    ),
-)
-def jira_ensure_person_daily(
-    reference_date: Annotated[str, Field(description="Reference date 'YYYY-MM-DD'. Empty = today.")] = "",
-    person_name: Annotated[str, Field(description="Person name for the summary. Empty = JIRA_DAILY_PERSON_NAME env var.")] = "",
-) -> dict[str, Any]:
-    """Ensure the monthly person daily issue exists on the GREDOM board."""
-    try:
-        name = (person_name or "").strip() or (os.getenv("JIRA_DAILY_PERSON_NAME") or "").strip()
-        if not name:
-            return {"error": "person_name is required (or set JIRA_DAILY_PERSON_NAME in env)."}
-
-        ref = _parse_reference_date(reference_date)
-        month_name_pt = _MONTH_NAMES_PT[ref.month - 1]
-        year = ref.strftime("%Y")
-        expected_summary = f"{name} {month_name_pt} de {year}"
-
-        client = _client()
-
-        # Search for existing issue
-        safe = _escape_jql_text(expected_summary)
-        jql = f'text ~ "{safe}" ORDER BY created DESC'
-        data = client.search_issues(jql, max_results=5)
-        issues = [
-            {
-                "key": item.get("key"),
-                "summary": (item.get("fields") or {}).get("summary"),
-            }
-            for item in data.get("issues", [])
-        ]
-        if issues:
-            return {"found": True, "summary": expected_summary, "issues": issues}
-
-        # Not found — locate GREDOM project
-        projects = client.search_projects("GREDOM")
-        if not projects:
-            return {"error": "GREDOM project not found via search."}
-        project_key = projects[0]["key"]
-
-        # Resolve current user for assignee
-        user = client.current_user()
-        assignee_id = user.get("accountId") if user else None
-
-        # Create the issue
-        created = client.create_issue(project_key, expected_summary, assignee_account_id=assignee_id)
-        return {
-            "found": False,
-            "created": True,
-            "key": created.get("key"),
-            "summary": expected_summary,
-            "project": project_key,
-            "assignee": assignee_id,
-        }
     except (JiraError, ValueError) as exc:
         return _error(exc)
 

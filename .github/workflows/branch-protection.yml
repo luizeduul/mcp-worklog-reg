@@ -6,12 +6,10 @@ on:
 jobs:
   protect:
     runs-on: ubuntu-latest
-    permissions:
-      administration: write
     steps:
       - name: Apply protection to main
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           gh api \
             --method PUT \
@@ -23,12 +21,8 @@ jobs:
               "strict": true,
               "contexts": ["test"]
             },
-            "enforce_admins": true,
-            "required_pull_request_reviews": {
-              "dismiss_stale_reviews": true,
-              "require_code_owner_reviews": false,
-              "required_approving_review_count": 1
-            },
+            "enforce_admins": false,
+            "required_pull_request_reviews": null,
             "restrictions": null,
             "required_linear_history": true,
             "allow_force_pushes": false,

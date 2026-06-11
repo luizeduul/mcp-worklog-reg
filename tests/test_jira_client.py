@@ -19,6 +19,23 @@ def test_init_requires_config():
         JiraClient(base_url="", email="", api_token="")
 
 
+def test_init_rejects_non_https():
+    with pytest.raises(JiraError) as exc_info:
+        JiraClient(base_url="http://example.atlassian.net", email="me@x.com", api_token="t")
+    assert "https" in exc_info.value.message.lower()
+
+
+def test_init_rejects_non_atlassian_host():
+    with pytest.raises(JiraError) as exc_info:
+        JiraClient(base_url="https://evil.example.com", email="me@x.com", api_token="t")
+    assert "atlassian.net" in exc_info.value.message.lower()
+
+
+def test_init_strips_trailing_slash():
+    client = JiraClient(base_url=f"{BASE}/", email="me@x.com", api_token="t")
+    assert client.base_url == BASE
+
+
 def test_auth_header_basic():
     client = make_client()
     expected = base64.b64encode(b"me@example.com:tok").decode()
@@ -28,12 +45,12 @@ def test_auth_header_basic():
 @respx.mock
 def test_current_user_via_myself():
     respx.get(f"{BASE}/rest/api/3/myself").mock(
-        return_value=httpx.Response(200, json={"accountId": "abc", "displayName": "Luiz"})
+        return_value=httpx.Response(200, json={"accountId": "abc", "displayName": "Test User"})
     )
     client = make_client()
     current_user = client.current_user()
     assert current_user["accountId"] == "abc"
-    assert current_user["displayName"] == "Luiz"
+    assert current_user["displayName"] == "Test User"
 
 
 @respx.mock
@@ -42,7 +59,7 @@ def test_current_user_fallback_user_search():
     respx.get(f"{BASE}/rest/api/3/user/search").mock(
         return_value=httpx.Response(
             200,
-            json=[{"accountId": "abc", "displayName": "Luiz", "emailAddress": "me@example.com"}],
+            json=[{"accountId": "abc", "displayName": "Test User", "emailAddress": "me@example.com"}],
         )
     )
     client = make_client()
@@ -83,6 +100,30 @@ def test_log_work_without_comment_does_not_send_field():
     client.log_work("PROJ-347", 2100, "2026-06-10T11:25:00.000-0300", None)
     body = json.loads(route.calls.last.request.content)
     assert "comment" not in body
+
+
+@respx.mock
+def test_get_issue_requests_compact_fields():
+    route = respx.get(f"{BASE}/rest/api/3/issue/PROJ-355").mock(
+        return_value=httpx.Response(200, json={"key": "PROJ-355", "fields": {"summary": "x"}})
+    )
+    client = make_client()
+    data = client.get_issue("PROJ-355")
+    assert data["key"] == "PROJ-355"
+    assert "fields" in route.calls.last.request.url.params
+
+
+@respx.mock
+def test_add_comment_wraps_body():
+    route = respx.post(f"{BASE}/rest/api/3/issue/PROJ-355/comment").mock(
+        return_value=httpx.Response(201, json={"id": "555", "created": "2026-06-10T08:45:00.000-0300"})
+    )
+    client = make_client()
+    adf = {"type": "doc", "version": 1, "content": []}
+    response = client.add_comment("PROJ-355", adf)
+    assert response["id"] == "555"
+    body = json.loads(route.calls.last.request.content)
+    assert body["body"] == adf
 
 
 @respx.mock
@@ -128,21 +169,24 @@ def test_unexpected_empty_response_becomes_error():
 
 
 @respx.mock
-def test_delete_worklog():
-    respx.delete(f"{BASE}/rest/api/3/issue/PROJ-355/worklog/10001").mock(
-        return_value=httpx.Response(204)
-    )
-    client = make_client()
-    response = client.delete_worklog("PROJ-355", "10001")
-    assert response == {"deleted": "10001"}
-
-
-@respx.mock
-def test_delete_worklog_without_permission_403():
-    respx.delete(f"{BASE}/rest/api/3/issue/PROJ-355/worklog/10001").mock(
-        return_value=httpx.Response(403, json={"errorMessages": ["forbidden"]})
+def test_rate_limit_429_maps_to_friendly_message():
+    respx.get(f"{BASE}/rest/api/3/issue/PROJ-355/worklog").mock(
+        return_value=httpx.Response(429, json={"errorMessages": ["rate limited"]})
     )
     client = make_client()
     with pytest.raises(JiraError) as exc_info:
-        client.delete_worklog("PROJ-355", "10001")
-    assert exc_info.value.status == 403
+        client.get_worklogs("PROJ-355")
+    assert exc_info.value.status == 429
+    assert "rate limit" in exc_info.value.message.lower()
+
+
+@respx.mock
+def test_server_error_500_maps_to_friendly_message():
+    respx.get(f"{BASE}/rest/api/3/issue/PROJ-355/worklog").mock(
+        return_value=httpx.Response(500, json={})
+    )
+    client = make_client()
+    with pytest.raises(JiraError) as exc_info:
+        client.get_worklogs("PROJ-355")
+    assert exc_info.value.status == 500
+    assert "service error" in exc_info.value.message.lower()

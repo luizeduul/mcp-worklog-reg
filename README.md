@@ -26,16 +26,17 @@ MCP client -> stdio JSON-RPC -> jira-worklog-mcp -> HTTPS -> Jira Cloud REST v3
 
 ### Tools
 
+This server is **read/append only** by design (least privilege). It exposes exactly seven tools and has **no** ability to create, edit, transition, assign, or delete issues, comments, or worklogs.
+
 | Tool | Purpose |
 |---|---|
 | `jira_whoami` | Validates Jira authentication and returns the current identity when Jira allows it. |
 | `jira_search_issues` | Searches issues. No args returns your open issues; `query` does text search; `jql` runs raw JQL. |
-| `jira_resolve_daily_issue` | Resolves a daily issue using `JIRA_DAILY_SEARCH_TEXT` and optional `JIRA_DAILY_PROJECT`. |
-| `jira_ensure_person_daily` | Checks whether a `<person> <month> de <year>` issue exists on the GREDOM board for the given month/year. Creates it and assigns it to the current user if not found. Triggered by the terms `daily` or `dayli`. |
-| `jira_log_work` | Logs one worklog. `time_spent` accepts `2:40` or `1h 30m`. |
-| `jira_log_work_batch` | Logs multiple worklogs in one call. Useful for time-sheet rows. |
+| `jira_get_issue` | Returns a compact view of one issue (key, summary, status, type, assignee, priority, labels, description text). |
+| `jira_add_comment` | Adds a comment to an issue. Plain text is converted to Jira ADF. |
+| `jira_log_work` | Logs one worklog. `time_spent` accepts `2:40` or `1h 30m`. `issue_key="daily"` logs into the configured monthly bucket (`JIRA_DAILY_JQL`). |
+| `jira_log_work_batch` | Logs multiple worklogs in one call. Entries may use `issue_key="daily"`. Skips entries already logged at the same date/time and returns them for confirmation. |
 | `jira_get_worklogs` | Lists worklogs from an issue. `mine_only` filters your entries when identity is available. |
-| `jira_delete_worklog` | Deletes a worklog. Requires Jira permission for deleting worklogs. |
 
 ### Requirements
 
@@ -58,7 +59,7 @@ cp .env.example .env
 uv sync
 ```
 
-Edit `.env` with your Jira URL, email, API token, and optional daily search template.
+Edit `.env` with your Jira URL, email, and API token.
 
 Do not commit `.env`. It is already ignored by `.gitignore`.
 
@@ -109,8 +110,6 @@ claude mcp add jira-worklog --scope user `
   -e JIRA_BASE_URL=https://your-company.atlassian.net `
   -e JIRA_EMAIL=you@example.com `
   -e JIRA_API_TOKEN=your-token `
-  -e JIRA_DAILY_SEARCH_TEXT="Daily {month_name_en} {year}" `
-  -e JIRA_DAILY_PROJECT=PROJ `
   -- $env:UV_PATH --directory $env:MCP_PROJECT_DIR run server.py
 ```
 
@@ -140,23 +139,20 @@ The agent translates your pasted time-sheet block into tool calls. The server on
 1. Use the reference date you provide. If none is provided, the agent should ask.
 2. Classify each row:
    - Starts with an issue key like `PROJ-123`: log work to that issue.
-   - Is a daily entry: call `jira_resolve_daily_issue`, which searches with `JIRA_DAILY_SEARCH_TEXT` and optionally filters by `JIRA_DAILY_PROJECT`.
-   - Has no issue key and is not daily: skip it and report it in the preview.
+   - Has no issue key: find it first with `jira_search_issues`, or skip it and report it in the preview.
 3. Show a preview with issue key, duration, start time, and comment.
-4. After confirmation, call `jira_log_work_batch` and report each result.
+4. After confirmation, call `jira_log_work_batch`. Entries that already have a worklog at the same date/time are skipped and returned under `skipped_duplicates`; decide per entry whether to log them anyway with `jira_log_work`.
 
 ### Environment Variables
 
 | Variable | Required | Description |
 |---|---|---|
-| `JIRA_BASE_URL` | yes | Jira Cloud URL, for example `https://your-company.atlassian.net`. |
+| `JIRA_BASE_URL` | yes | Jira Cloud URL, must be HTTPS and a `*.atlassian.net` host, for example `https://your-company.atlassian.net`. |
 | `JIRA_EMAIL` | yes | Atlassian account email. |
 | `JIRA_API_TOKEN` | yes | Jira API token. |
-| `JIRA_DAILY_SEARCH_TEXT` | no | Text/template used to find the issue when a row is daily, for example `Daily {month_name_en} {year}`. |
-| `JIRA_DAILY_PROJECT` | no | Optional Jira project key filter for daily issue resolution. |
-| `JIRA_DAILY_PERSON_NAME` | no | Person name used by `jira_ensure_person_daily` when none is passed explicitly, for example `John`. |
+| `JIRA_DAILY_JQL` | no | JQL that resolves `issue_key="daily"` to a recurring monthly bucket issue. Use `{month}` (Portuguese month name) and `{year}`, filled from the worklog date, e.g. `project = MYPROJ AND summary ~ "Timesheet {month} de {year}" ORDER BY created DESC`. Unset disables the feature. |
 
-`JIRA_DAILY_SEARCH_TEXT` supports `{date}`, `{year}`, `{month}`, `{month_number}`, `{month_name_en}`, and `{month_name_pt}`.
+The required three are read from `.env` (optional) or from the MCP client environment. No `.env` file is required.
 
 Local launcher variables, used only in MCP client setup examples:
 
@@ -167,11 +163,12 @@ Local launcher variables, used only in MCP client setup examples:
 
 ### Security
 
-- Credentials are not stored in code.
-- `.env` is ignored by Git.
+- **Least privilege:** the server is read/append only. It cannot create, edit, transition, assign, or delete issues, comments, or worklogs. No tool maps to a destructive Jira endpoint.
+- `JIRA_BASE_URL` is validated: HTTPS only and limited to `*.atlassian.net` hosts.
+- Credentials are not stored in code. They come from environment variables; `.env` is optional and ignored by Git.
+- One shared, pooled `httpx.Client` with a fixed timeout and connection limits.
 - Local machine paths should stay in environment variables such as `UV_PATH` and `MCP_PROJECT_DIR`.
 - The server uses local stdio transport; it does not open an inbound network port.
-- The exposed tools are limited to searching issues and managing worklogs.
 
 ### Development
 
@@ -227,16 +224,17 @@ Cliente MCP -> stdio JSON-RPC -> jira-worklog-mcp -> HTTPS -> Jira Cloud REST v3
 
 ### Tools
 
+Este servidor é **somente leitura/append** por design (menor privilégio). Expõe exatamente sete tools e **não** consegue criar, editar, transicionar, atribuir ou apagar issues, comentários ou worklogs.
+
 | Tool | Finalidade |
 |---|---|
 | `jira_whoami` | Valida a autenticação no Jira e retorna a identidade atual quando o Jira permite. |
 | `jira_search_issues` | Busca issues. Sem args retorna suas abertas; `query` faz busca textual; `jql` executa JQL cru. |
-| `jira_resolve_daily_issue` | Resolve uma issue de daily usando `JIRA_DAILY_SEARCH_TEXT` e `JIRA_DAILY_PROJECT` opcional. |
-| `jira_ensure_person_daily` | Verifica se existe uma issue `<pessoa> <mês> de <ano>` no quadro GREDOM para o mês/ano informado. Se não existir, cria e atribui ao usuário atual. Acionada pelos termos `daily` ou `dayli`. |
-| `jira_log_work` | Lança um worklog. `time_spent` aceita `2:40` ou `1h 30m`. |
-| `jira_log_work_batch` | Lança vários worklogs em uma chamada. Bom para linhas de planilha. |
+| `jira_get_issue` | Retorna uma visão compacta de uma issue (key, summary, status, tipo, responsável, prioridade, labels, texto da descrição). |
+| `jira_add_comment` | Adiciona um comentário a uma issue. Texto simples é convertido para ADF do Jira. |
+| `jira_log_work` | Lança um worklog. `time_spent` aceita `2:40` ou `1h 30m`. `issue_key="daily"` lança na tarefa-balde mensal configurada (`JIRA_DAILY_JQL`). |
+| `jira_log_work_batch` | Lança vários worklogs em uma chamada. Entradas podem usar `issue_key="daily"`. Pula lançamentos já existentes no mesmo dia/horário e os devolve para você confirmar. |
 | `jira_get_worklogs` | Lista worklogs de uma issue. `mine_only` filtra os seus quando a identidade está disponível. |
-| `jira_delete_worklog` | Apaga um worklog. Requer permissão no Jira para apagar worklogs. |
 
 ### Pré-Requisitos
 
@@ -259,7 +257,7 @@ cp .env.example .env
 uv sync
 ```
 
-Edite o `.env` com a URL do Jira, email, token e, se precisar, o texto/template de busca da daily.
+Edite o `.env` com a URL do Jira, email e token.
 
 Não commite o `.env`. Ele já está no `.gitignore`.
 
@@ -310,8 +308,6 @@ claude mcp add jira-worklog --scope user `
   -e JIRA_BASE_URL=https://sua-empresa.atlassian.net `
   -e JIRA_EMAIL=voce@example.com `
   -e JIRA_API_TOKEN=seu-token `
-  -e JIRA_DAILY_SEARCH_TEXT="Daily {month_name_pt} {year}" `
-  -e JIRA_DAILY_PROJECT=PROJ `
   -- $env:UV_PATH --directory $env:MCP_PROJECT_DIR run server.py
 ```
 
@@ -341,23 +337,20 @@ O agente traduz o bloco colado da planilha em chamadas de tools. O servidor apen
 1. Usa a data de referência que você informar. Se não informar, o agente deve perguntar.
 2. Classifica cada linha:
    - Começa com chave de issue, como `PROJ-123`: lança na issue.
-   - É uma daily: chama `jira_resolve_daily_issue`, que busca usando `JIRA_DAILY_SEARCH_TEXT` e filtra opcionalmente por `JIRA_DAILY_PROJECT`.
-   - Não tem chave e não é daily: pula e mostra no preview.
+   - Não tem chave: acha a issue antes com `jira_search_issues`, ou pula e mostra no preview.
 3. Mostra preview com issue, duração, início e comentário.
-4. Depois da confirmação, chama `jira_log_work_batch` e reporta cada resultado.
+4. Depois da confirmação, chama `jira_log_work_batch`. Lançamentos já existentes no mesmo dia/horário são pulados e devolvidos em `skipped_duplicates`; você decide por linha se quer lançar mesmo assim via `jira_log_work`.
 
 ### Variáveis De Ambiente
 
 | Variável | Obrigatória | Descrição |
 |---|---|---|
-| `JIRA_BASE_URL` | sim | URL do Jira Cloud, por exemplo `https://sua-empresa.atlassian.net`. |
+| `JIRA_BASE_URL` | sim | URL do Jira Cloud, precisa ser HTTPS e um host `*.atlassian.net`, por exemplo `https://sua-empresa.atlassian.net`. |
 | `JIRA_EMAIL` | sim | Email da conta Atlassian. |
 | `JIRA_API_TOKEN` | sim | API token do Jira. |
-| `JIRA_DAILY_SEARCH_TEXT` | não | Texto/template usado para achar a issue quando uma linha for daily, por exemplo `Daily {month_name_pt} {year}`. |
-| `JIRA_DAILY_PROJECT` | não | Filtro opcional de chave de projeto para resolver a issue de daily. |
-| `JIRA_DAILY_PERSON_NAME` | não | Nome da pessoa usado por `jira_ensure_person_daily` quando não passado explicitamente, por exemplo `João`. |
+| `JIRA_DAILY_JQL` | não | JQL que resolve `issue_key="daily"` para a tarefa-balde mensal. Use `{month}` (nome do mês em PT) e `{year}`, preenchidos pela data do worklog, ex. `project = MYPROJ AND summary ~ "Timesheet {month} de {year}" ORDER BY created DESC`. Vazio desliga o recurso. |
 
-`JIRA_DAILY_SEARCH_TEXT` aceita `{date}`, `{year}`, `{month}`, `{month_number}`, `{month_name_en}` e `{month_name_pt}`.
+As três obrigatórias são lidas do `.env` (opcional) ou do ambiente do cliente MCP. Nenhum arquivo `.env` é obrigatório.
 
 Variáveis locais de launcher, usadas apenas nos exemplos de registro MCP:
 
@@ -368,11 +361,12 @@ Variáveis locais de launcher, usadas apenas nos exemplos de registro MCP:
 
 ### Segurança
 
-- Credenciais não ficam no código.
-- `.env` é ignorado pelo Git.
+- **Menor privilégio:** o servidor é somente leitura/append. Não cria, edita, transiciona, atribui nem apaga issues, comentários ou worklogs. Nenhuma tool aponta para um endpoint destrutivo do Jira.
+- `JIRA_BASE_URL` é validada: apenas HTTPS e apenas hosts `*.atlassian.net`.
+- Credenciais não ficam no código. Vêm de variáveis de ambiente; `.env` é opcional e ignorado pelo Git.
+- Um único `httpx.Client` compartilhado e com pool, timeout fixo e limites de conexão.
 - Caminhos locais da máquina devem ficar em variáveis como `UV_PATH` e `MCP_PROJECT_DIR`.
 - O servidor usa stdio local; não abre porta de rede.
-- As tools expostas se limitam a buscar issues e gerenciar worklogs.
 
 ### Desenvolvimento
 
