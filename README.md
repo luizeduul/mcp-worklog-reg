@@ -208,11 +208,11 @@ Your company may use a separate timesheet app such as Tempo Timesheets. This ser
 
 ---
 
-## Portugues
+## Português
 
-`jira-worklog-mcp` e um servidor [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) para lancar e conferir horas no Jira Cloud a partir de agentes de IA como Claude Code, Claude Desktop, Cursor ou qualquer cliente MCP via stdio.
+`jira-worklog-mcp` é um servidor [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) para lançar e conferir horas no Jira Cloud a partir de agentes de IA como Claude Code, Claude Desktop, Cursor ou qualquer cliente MCP via stdio.
 
-O fluxo principal e simples: cole as linhas da sua planilha de horas no agente, confira o preview, e deixe o agente chamar este servidor para registrar cada item na issue correta do Jira.
+O fluxo principal é simples: cole as linhas da sua planilha de horas no agente, confira o preview, e deixe o agente chamar este servidor para registrar cada item na issue correta do Jira.
 
 ### Como Funciona
 
@@ -222,26 +222,26 @@ Cliente MCP -> stdio JSON-RPC -> jira-worklog-mcp -> HTTPS -> Jira Cloud REST v3
 
 - Transporte: stdio local. Sem servidor HTTP e sem porta aberta.
 - Auth: basic auth do Jira Cloud com `JIRA_EMAIL` e `JIRA_API_TOKEN`.
-- Configuracao: vem de variaveis de ambiente, lidas do `.env` ao lado do `server.py` ou passadas pelo cliente MCP.
-- Camadas: `jira_client.py` fala com a REST do Jira; `server.py` expoe as tools FastMCP e faz conversoes amigaveis.
+- Configuração: vem de variáveis de ambiente, lidas do `.env` ao lado do `server.py` ou passadas pelo cliente MCP.
+- Camadas: `jira_client.py` fala com a REST do Jira; `server.py` expõe as tools FastMCP e faz conversões amigáveis.
 
 ### Tools
 
 | Tool | Finalidade |
 |---|---|
-| `jira_whoami` | Valida a autenticacao no Jira e retorna a identidade atual quando o Jira permite. |
+| `jira_whoami` | Valida a autenticação no Jira e retorna a identidade atual quando o Jira permite. |
 | `jira_search_issues` | Busca issues. Sem args retorna suas abertas; `query` faz busca textual; `jql` executa JQL cru. |
 | `jira_resolve_daily_issue` | Resolve uma issue de daily usando `JIRA_DAILY_SEARCH_TEXT` e `JIRA_DAILY_PROJECT` opcional. |
-| `jira_ensure_person_daily` | Verifica se existe uma issue `<pessoa> <mes> de <ano>` no quadro GREDOM para o mes/ano informado. Se nao existir, cria e atribui ao usuario atual. Acionada pelos termos `daily` ou `dayli`. |
-| `jira_log_work` | Lanca um worklog. `time_spent` aceita `2:40` ou `1h 30m`. |
-| `jira_log_work_batch` | Lanca varios worklogs em uma chamada. Bom para linhas de planilha. |
-| `jira_get_worklogs` | Lista worklogs de uma issue. `mine_only` filtra os seus quando a identidade esta disponivel. |
-| `jira_delete_worklog` | Apaga um worklog. Requer permissao no Jira para apagar worklogs. |
+| `jira_ensure_person_daily` | Verifica se existe uma issue `<pessoa> <mês> de <ano>` no quadro GREDOM para o mês/ano informado. Se não existir, cria e atribui ao usuário atual. Acionada pelos termos `daily` ou `dayli`. |
+| `jira_log_work` | Lança um worklog. `time_spent` aceita `2:40` ou `1h 30m`. |
+| `jira_log_work_batch` | Lança vários worklogs em uma chamada. Bom para linhas de planilha. |
+| `jira_get_worklogs` | Lista worklogs de uma issue. `mine_only` filtra os seus quando a identidade está disponível. |
+| `jira_delete_worklog` | Apaga um worklog. Requer permissão no Jira para apagar worklogs. |
 
-### Pre-Requisitos
+### Pré-Requisitos
 
-- [uv](https://github.com/astral-sh/uv), recomendado para gerenciar Python e dependencias.
-- Conta no Jira Cloud com permissao para lancar horas nas issues.
+- [uv](https://github.com/astral-sh/uv), recomendado para gerenciar Python e dependências.
+- Conta no Jira Cloud com permissão para lançar horas nas issues.
 - API token do Jira criado na Atlassian.
 
 Instale o `uv` no Windows:
@@ -250,7 +250,7 @@ Instale o `uv` no Windows:
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-### Instalacao
+### Instalação
 
 ```powershell
 git clone <url-do-repo> jira-worklog-mcp
@@ -261,7 +261,7 @@ uv sync
 
 Edite o `.env` com a URL do Jira, email, token e, se precisar, o texto/template de busca da daily.
 
-Nao commite o `.env`. Ele ja esta no `.gitignore`.
+Não commite o `.env`. Ele já está no `.gitignore`.
 
 ### Token De API Do Jira
 
@@ -289,7 +289,7 @@ uv run python -c "import server; print(server.jira_whoami())"
 
 ### Registro Em Cliente MCP
 
-Mantenha caminhos especificos da sua maquina fora do Git. Defina-os como variaveis de ambiente no shell, no perfil do sistema ou no ambiente do cliente MCP:
+Mantenha caminhos específicos da sua máquina fora do Git. Defina-os como variáveis de ambiente no shell, no perfil do sistema ou no ambiente do cliente MCP:
 
 ```powershell
 $env:UV_PATH = "C:/caminho/para/uv.exe"
@@ -315,7 +315,7 @@ claude mcp add jira-worklog --scope user `
   -- $env:UV_PATH --directory $env:MCP_PROJECT_DIR run server.py
 ```
 
-Claude Desktop, Cursor ou outro cliente MCP via stdio pode chamar pelo PowerShell para manter os caminhos em variaveis de ambiente:
+Claude Desktop, Cursor ou outro cliente MCP via stdio pode chamar pelo PowerShell para manter os caminhos em variáveis de ambiente:
 
 ```json
 {
@@ -336,42 +336,42 @@ Claude Desktop, Cursor ou outro cliente MCP via stdio pode chamar pelo PowerShel
 
 ### Fluxo Da Planilha
 
-O agente traduz o bloco colado da planilha em chamadas de tools. O servidor apenas expoe as primitivas.
+O agente traduz o bloco colado da planilha em chamadas de tools. O servidor apenas expõe as primitivas.
 
-1. Usa a data de referencia que voce informar. Se nao informar, o agente deve perguntar.
+1. Usa a data de referência que você informar. Se não informar, o agente deve perguntar.
 2. Classifica cada linha:
-   - Comeca com chave de issue, como `PROJ-123`: lanca na issue.
-   - E uma daily: chama `jira_resolve_daily_issue`, que busca usando `JIRA_DAILY_SEARCH_TEXT` e filtra opcionalmente por `JIRA_DAILY_PROJECT`.
-   - Nao tem chave e nao e daily: pula e mostra no preview.
-3. Mostra preview com issue, duracao, inicio e comentario.
-4. Depois da confirmacao, chama `jira_log_work_batch` e reporta cada resultado.
+   - Começa com chave de issue, como `PROJ-123`: lança na issue.
+   - É uma daily: chama `jira_resolve_daily_issue`, que busca usando `JIRA_DAILY_SEARCH_TEXT` e filtra opcionalmente por `JIRA_DAILY_PROJECT`.
+   - Não tem chave e não é daily: pula e mostra no preview.
+3. Mostra preview com issue, duração, início e comentário.
+4. Depois da confirmação, chama `jira_log_work_batch` e reporta cada resultado.
 
-### Variaveis De Ambiente
+### Variáveis De Ambiente
 
-| Variavel | Obrigatoria | Descricao |
+| Variável | Obrigatória | Descrição |
 |---|---|---|
 | `JIRA_BASE_URL` | sim | URL do Jira Cloud, por exemplo `https://sua-empresa.atlassian.net`. |
 | `JIRA_EMAIL` | sim | Email da conta Atlassian. |
 | `JIRA_API_TOKEN` | sim | API token do Jira. |
-| `JIRA_DAILY_SEARCH_TEXT` | nao | Texto/template usado para achar a issue quando uma linha for daily, por exemplo `Daily {month_name_pt} {year}`. |
-| `JIRA_DAILY_PROJECT` | nao | Filtro opcional de chave de projeto para resolver a issue de daily. |
-| `JIRA_DAILY_PERSON_NAME` | nao | Nome da pessoa usado por `jira_ensure_person_daily` quando nao passado explicitamente, por exemplo `Joao`. |
+| `JIRA_DAILY_SEARCH_TEXT` | não | Texto/template usado para achar a issue quando uma linha for daily, por exemplo `Daily {month_name_pt} {year}`. |
+| `JIRA_DAILY_PROJECT` | não | Filtro opcional de chave de projeto para resolver a issue de daily. |
+| `JIRA_DAILY_PERSON_NAME` | não | Nome da pessoa usado por `jira_ensure_person_daily` quando não passado explicitamente, por exemplo `João`. |
 
 `JIRA_DAILY_SEARCH_TEXT` aceita `{date}`, `{year}`, `{month}`, `{month_number}`, `{month_name_en}` e `{month_name_pt}`.
 
-Variaveis locais de launcher, usadas apenas nos exemplos de registro MCP:
+Variáveis locais de launcher, usadas apenas nos exemplos de registro MCP:
 
-| Variavel | Obrigatoria | Descricao |
+| Variável | Obrigatória | Descrição |
 |---|---|---|
 | `UV_PATH` | sim para setup com caminho absoluto | Caminho absoluto para `uv.exe` ou `uv`. |
-| `MCP_PROJECT_DIR` | sim para setup com caminho absoluto | Caminho absoluto deste repositorio na sua maquina. |
+| `MCP_PROJECT_DIR` | sim para setup com caminho absoluto | Caminho absoluto deste repositório na sua máquina. |
 
-### Seguranca
+### Segurança
 
-- Credenciais nao ficam no codigo.
-- `.env` e ignorado pelo Git.
-- Caminhos locais da maquina devem ficar em variaveis como `UV_PATH` e `MCP_PROJECT_DIR`.
-- O servidor usa stdio local; nao abre porta de rede.
+- Credenciais não ficam no código.
+- `.env` é ignorado pelo Git.
+- Caminhos locais da máquina devem ficar em variáveis como `UV_PATH` e `MCP_PROJECT_DIR`.
+- O servidor usa stdio local; não abre porta de rede.
 - As tools expostas se limitam a buscar issues e gerenciar worklogs.
 
 ### Desenvolvimento
@@ -380,7 +380,7 @@ Variaveis locais de launcher, usadas apenas nos exemplos de registro MCP:
 uv run pytest -q
 ```
 
-Os testes usam [`respx`](https://lundberg.github.io/respx/) para mockar chamadas HTTP ao Jira. Eles nao chamam a API real.
+Os testes usam [`respx`](https://lundberg.github.io/respx/) para mockar chamadas HTTP ao Jira. Eles não chamam a API real.
 
 Estrutura:
 
@@ -397,12 +397,12 @@ jira-worklog-mcp/
 
 **O cliente MCP mostra o servidor como failed.**
 
-Rode `uv run server.py` no repositorio e veja o erro. Causas comuns: variaveis de ambiente ausentes, `uv` indisponivel para o launcher ou `MCP_PROJECT_DIR` incorreto.
+Rode `uv run server.py` no repositório e veja o erro. Causas comuns: variáveis de ambiente ausentes, `uv` indisponível para o launcher ou `MCP_PROJECT_DIR` incorreto.
 
-**`jira_whoami` retorna erro de token invalido.**
+**`jira_whoami` retorna erro de token inválido.**
 
-Confira `JIRA_BASE_URL`, `JIRA_EMAIL` e `JIRA_API_TOKEN`. Gere um token novo se necessario.
+Confira `JIRA_BASE_URL`, `JIRA_EMAIL` e `JIRA_API_TOKEN`. Gere um token novo se necessário.
 
-**A hora foi lancada mas nao aparece no timesheet da empresa.**
+**A hora foi lançada mas não aparece no timesheet da empresa.**
 
 Sua empresa pode usar um app separado, como Tempo Timesheets. Este servidor grava worklogs nativos do Jira.
