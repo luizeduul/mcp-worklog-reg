@@ -24,3 +24,7 @@ class ProviderError(Exception):
         self.message = message
         self.status = status
         self.detail = detail
+
+
+class ArtiaError(ProviderError):
+    """Handled Artia error with a user-friendly message."""
