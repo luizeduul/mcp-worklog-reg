@@ -11,6 +11,7 @@ from collections.abc import Callable
 
 from src.config import DEFAULT_PROVIDER
 from src.providers.base import TaskProvider
+from src.providers.artia_provider import ArtiaProvider
 from src.providers.github_provider import GitHubProvider
 from src.providers.jira_provider import JiraProvider
 from src.providers.redmine_provider import RedmineProvider
@@ -45,6 +46,7 @@ class ProviderRegistry:
 
 
 registry = ProviderRegistry()
+registry.register("artia", ArtiaProvider.from_env)
 registry.register("jira", JiraProvider.from_env)
 registry.register("redmine", RedmineProvider.from_env)
 registry.register("github", GitHubProvider.from_env)

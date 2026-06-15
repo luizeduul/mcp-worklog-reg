@@ -1,121 +1,347 @@
-# jira-worklog-mcp — guia de uso (para outra sessão)
+# worklog-mcp usage
 
-Referência rápida do servidor MCP que **lança e confere horas (worklog) no Jira Cloud**
-a partir de um agente (Claude Code, Cursor, etc.). Tudo genérico — substitua os
-placeholders e use variáveis de ambiente; **nada de caminho de máquina ou nome de
-instância chumbado**.
+English documentation comes first, matching README style. A Portuguese section is included below.
+
+- [English](#english)
+- [Portugues](#portugues)
 
 ---
 
-## 1. Pré-requisitos
+## English
 
-- **uv** instalado (gerencia Python + roda o server). Instale:
+Quick reference for the MCP server that logs and checks worklogs across multiple providers (Jira Cloud, Redmine, GitHub, Artia) through AI agents.
+
+### 1. Prerequisites
+
+- `uv` installed (Python/dependencies/runtime):
   `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`
-- Conta **Jira Cloud** com permissão de lançar horas.
-- **Token CLÁSSICO** (sem scopes). Em `id.atlassian.com/manage-profile/security/api-tokens`
-  use **"Create API token"**, NÃO o "with scopes".
-  > Tokens *with scopes* não enxergam projetos **team-managed (Jira Software)** —
-  > autenticam mas `/project` volta vazio e `BROWSE_PROJECTS=false`. Token clássico vê tudo.
+- Account in one supported provider with permission to log work:
+  - Jira Cloud
+  - Redmine
+  - GitHub
+  - Artia
 
-## 2. Variáveis de ambiente
+### 2. Environment Variables by Provider
 
-Lidas de um `.env` ao lado do `server.py` **ou** passadas pelo cliente MCP via `-e`.
+#### 2.1 Jira Cloud
 
-| Variável | Obrig. | Descrição |
+| Variable | Required | Description |
 |---|---|---|
-| `JIRA_BASE_URL` | sim | `https://<sua-instancia>.atlassian.net` (HTTPS e host `*.atlassian.net`) |
-| `JIRA_EMAIL` | sim | e-mail da conta Atlassian |
-| `JIRA_API_TOKEN` | sim | **token clássico** |
-| `JIRA_DAILY_JQL` | não | JQL que resolve `issue_key="daily"` para a tarefa-balde mensal. `{month}` = mês PT, `{year}` = ano (da data do worklog). Vazio = recurso desligado. |
+| `JIRA_BASE_URL` | yes | `https://<your-instance>.atlassian.net` (HTTPS and `*.atlassian.net`) |
+| `JIRA_EMAIL` | yes | Atlassian account email |
+| `JIRA_API_TOKEN` | yes | Classic API token |
+| `JIRA_DAILY_JQL` | no | JQL template for `issue_key="daily"`. `{month}` and `{year}` are filled from worklog date. |
 
-`.env` é **opcional** — o server funciona só com as variáveis vindas do cliente MCP.
+Use a classic Jira API token (not "with scopes") for best compatibility with team-managed projects.
 
-## 3. Registrar no Claude Code (outra máquina/sessão)
+#### 2.2 Redmine
+
+| Variable | Required | Description |
+|---|---|---|
+| `REDMINE_URL` | yes | Redmine base URL, for example `https://redmine.example.com` |
+| `REDMINE_API_KEY` | yes | Redmine API key from account settings |
+
+#### 2.3 GitHub
+
+| Variable | Required | Description |
+|---|---|---|
+| `GITHUB_TOKEN` | yes | Personal Access Token with `repo` and `user` scopes |
+| `GITHUB_REPO` | no | Default repo (`owner/repo`) for shorthand issue references |
+
+#### 2.4 Artia
+
+| Variable | Required | Description |
+|---|---|---|
+| `ARTIA_CLIENT_ID` | yes | Client ID from Artia integrations |
+| `ARTIA_SECRET` | yes | Integration secret |
+| `ARTIA_ACCOUNT_ID` | yes | Account/workspace id |
+| `ARTIA_FOLDER_ID` | no | Default folder for `search_tasks` |
+
+#### 2.5 Provider Selection
+
+| Variable | Required | Description |
+|---|---|---|
+| `WORK_PROVIDER` | no | Active provider: `jira`, `redmine`, `github`, `artia`. Default: `jira`. |
+
+Variables can come from `.env` next to root `server.py` or from the MCP client environment.
+
+### 3. Link This MCP Server to AI Agents
+
+Keep paths generic and machine-local. Suggested shell variables:
 
 ```powershell
-claude mcp add jira-worklog --scope user `
-  -- "<CAMINHO_DO_UV>" --directory "<CAMINHO_DO_REPO>" run server.py
+$env:UV_PATH = "C:/path/to/uv.exe"
+$env:MCP_PROJECT_DIR = "C:/path/to/worklog-mcp"
 ```
 
-- `<CAMINHO_DO_UV>`: de preferência o **absoluto** (ex. `%USERPROFILE%\.local\bin\uv.exe`).
-  Com `uv` "pelado" o health check pode dar **"Failed to connect"** se `~/.local/bin`
-  não estiver no PATH do launcher.
-- `<CAMINHO_DO_REPO>`: pasta onde está o `server.py` (use barra `/` mesmo no Windows).
-- Com `.env` preenchido, **não precisa** `-e`. Recarregue a sessão e veja em `/mcp`.
+Provider-ready environment blocks (PowerShell):
 
-Outros clientes (Cursor/Desktop) usam a mesma assinatura, muda só o arquivo de config.
-
----
-
-## 4. Tools (7)
-
-Servidor **somente leitura/append** (menor privilégio): não cria, edita, transiciona,
-atribui nem apaga issues, comentários ou worklogs.
-
-| Tool | Para que | Args principais |
-|---|---|---|
-| `jira_whoami` | valida auth; retorna `accountId`/`displayName` (token clássico) | — |
-| `jira_search_issues` | acha issues | `query` (texto livre) ou `jql` (cru); sem args = minhas abertas; `max_results` |
-| `jira_get_issue` | visão compacta de 1 issue | `issue_key` |
-| `jira_add_comment` | adiciona comentário | `issue_key`, `comment` |
-| `jira_log_work` | lança **1** worklog | `issue_key` (ou `"daily"`), `time_spent`, `started?`, `comment?` |
-| `jira_log_work_batch` | lança **N** worklogs; pula duplicados no mesmo horário; reporta linha a linha | `entries`: lista de `{issue_key, time_spent, started?, comment?}` (`issue_key` pode ser `"daily"`); `skip_duplicates?` (default `true`) |
-| `jira_get_worklogs` | lista worklogs de uma issue | `issue_key`, `mine_only?` |
-
-**Formatos:**
-- `time_spent`: `2:40` (H:MM) **ou** `1h 30m` / `45m` / `2h`.
-- `started`: `YYYY-MM-DD` ou `YYYY-MM-DD HH:MM` (vazio = agora). Usa o fuso da máquina.
-- `comment`: texto simples (o server converte pra ADF).
-- `issue_key="daily"` (ou `"dayli"`): o server acha sozinho a tarefa-balde do mês via
-  `JIRA_DAILY_JQL` (preenchendo mês/ano da data do lançamento) e lança lá — sem chutar
-  ticket. Exige `JIRA_DAILY_JQL` configurada; senão retorna erro. A resposta traz
-  `resolved_from: "daily"` e o `issue_key` real resolvido.
-
----
-
-## 5. Como pedir (linguagem natural)
-
-O **agente** traduz seu pedido nas tools — o server só expõe as primitivas.
-
-**Lançar avulso:**
-> "lança 1h30 na PROJ-123, comentário 'ajuste X', hoje"
-> → `jira_log_work(issue_key="PROJ-123", time_spent="1h 30m", comment="ajuste X")`
-
-**Conferir:**
-> "mostra os worklogs da PROJ-123 (só os meus)"
-> → `jira_get_worklogs(issue_key="PROJ-123", mine_only=true)`
-
-**Comentar:**
-> "comenta 'subi o fix' na PROJ-123"
-> → `jira_add_comment(issue_key="PROJ-123", comment="subi o fix")`
-
-**Em lote (planilha):** cole o bloco e **informe a data de referência**. O agente:
-1. Usa a data que você passar (não chuta).
-2. Classifica cada linha:
-   - começa com `^[A-Z]+-\d+` (ex. `PROJ-123`) → vira a issue; o resto do texto vira o comentário;
-   - linha de **daily** → `issue_key="daily"` (o server resolve a tarefa-balde do mês, sem perguntar);
-   - sem código → acha a issue antes com `jira_search_issues`, ou **não lança** e lista como pulada.
-3. Mostra **preview** (`código | duração | início | comentário`) e pede OK.
-4. Lança via `jira_log_work_batch`. Linhas já existentes no mesmo dia/horário voltam em
-   `skipped_duplicates` — o agente pergunta o que fazer com elas (lançar mesmo assim via
-   `jira_log_work` ou deixar como está).
-
----
-
-## 6. Gotchas
-
-- **Token clássico obrigatório** nesta família de instâncias (scoped não vê team-managed).
-- **Worklog nativo do Jira** — se a empresa usa **Tempo Timesheets**, o lançamento pode
-  não aparecer no timesheet do Tempo (confira com `jira_get_worklogs`).
-- **`currentUser()`**: funciona com token clássico (resolve identidade). Com scoped, não.
-- **Caminho do `uv`**: use absoluto se o health check falhar por PATH.
-- `.env` é **gitignorado** — nunca versione o token.
-
----
-
-## 7. Teste rápido de auth
+- They set environment variables in the current terminal session only.
+- They are useful for quick tests and temporary provider switching.
+- They are not the same as editing `.env`, which persists values in a file for reuse.
+- If both are present, MCP client-provided env values usually take precedence.
 
 ```powershell
-"<CAMINHO_DO_UV>" --directory "<CAMINHO_DO_REPO>" run python -c "import server; print(server.jira_whoami())"
+# Jira
+$env:WORK_PROVIDER = "jira"
+$env:JIRA_BASE_URL = "https://your-company.atlassian.net"
+$env:JIRA_EMAIL = "you@example.com"
+$env:JIRA_API_TOKEN = "your-token"
+
+# Redmine
+$env:WORK_PROVIDER = "redmine"
+$env:REDMINE_URL = "https://redmine.example.com"
+$env:REDMINE_API_KEY = "your-key"
+
+# GitHub
+$env:WORK_PROVIDER = "github"
+$env:GITHUB_TOKEN = "your-token"
+$env:GITHUB_REPO = "owner/repo"
+
+# Artia
+$env:WORK_PROVIDER = "artia"
+$env:ARTIA_CLIENT_ID = "your-client-id"
+$env:ARTIA_SECRET = "your-secret"
+$env:ARTIA_ACCOUNT_ID = "your-account-id"
+$env:ARTIA_FOLDER_ID = "optional-folder-id"
 ```
-Esperado: `{'ok': True, 'accountId': ..., 'displayName': ...}`.
+
+#### 3.1 Claude Code (CLI)
+
+```powershell
+claude mcp add worklog-mcp --scope user `
+  -e WORK_PROVIDER=jira `
+  -e JIRA_BASE_URL=https://your-company.atlassian.net `
+  -e JIRA_EMAIL=you@example.com `
+  -e JIRA_API_TOKEN=your-token `
+  -- $env:UV_PATH --directory $env:MCP_PROJECT_DIR run server.py
+```
+
+#### 3.2 Claude Desktop
+
+Edit `%APPDATA%/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "worklog-mcp": {
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "& $env:UV_PATH --directory $env:MCP_PROJECT_DIR run server.py"
+      ],
+      "env": {
+        "WORK_PROVIDER": "jira",
+        "JIRA_BASE_URL": "https://your-company.atlassian.net",
+        "JIRA_EMAIL": "you@example.com",
+        "JIRA_API_TOKEN": "your-token"
+      }
+    }
+  }
+}
+```
+
+#### 3.3 Codex-compatible clients
+
+For Codex clients that support MCP via config file, use a stdio server entry with `command`, `args`, and `env`. Example template:
+
+```json
+{
+  "mcpServers": {
+    "worklog-mcp": {
+      "command": "C:/path/to/uv.exe",
+      "args": ["--directory", "C:/path/to/worklog-mcp", "run", "server.py"],
+      "env": {
+        "WORK_PROVIDER": "jira",
+        "JIRA_BASE_URL": "https://your-company.atlassian.net",
+        "JIRA_EMAIL": "you@example.com",
+        "JIRA_API_TOKEN": "your-token"
+      }
+    }
+  }
+}
+```
+
+If your Codex client uses TOML instead of JSON, map the same fields (`command`, `args`, `env`) in its MCP section.
+
+Provider-ready `env` snippets for JSON configs:
+
+```json
+{
+  "WORK_PROVIDER": "jira",
+  "JIRA_BASE_URL": "https://your-company.atlassian.net",
+  "JIRA_EMAIL": "you@example.com",
+  "JIRA_API_TOKEN": "your-token"
+}
+```
+
+```json
+{
+  "WORK_PROVIDER": "redmine",
+  "REDMINE_URL": "https://redmine.example.com",
+  "REDMINE_API_KEY": "your-key"
+}
+```
+
+```json
+{
+  "WORK_PROVIDER": "github",
+  "GITHUB_TOKEN": "your-token",
+  "GITHUB_REPO": "owner/repo"
+}
+```
+
+```json
+{
+  "WORK_PROVIDER": "artia",
+  "ARTIA_CLIENT_ID": "your-client-id",
+  "ARTIA_SECRET": "your-secret",
+  "ARTIA_ACCOUNT_ID": "your-account-id",
+  "ARTIA_FOLDER_ID": "optional-folder-id"
+}
+```
+
+#### 3.4 Cline (VS Code extension)
+
+In Cline MCP settings, add a server entry using the same stdio command:
+
+```json
+{
+  "mcpServers": {
+    "worklog-mcp": {
+      "command": "C:/path/to/uv.exe",
+      "args": ["--directory", "C:/path/to/worklog-mcp", "run", "server.py"],
+      "env": {
+        "WORK_PROVIDER": "jira",
+        "JIRA_BASE_URL": "https://your-company.atlassian.net",
+        "JIRA_EMAIL": "you@example.com",
+        "JIRA_API_TOKEN": "your-token"
+      }
+    }
+  }
+}
+```
+
+Use your provider variables (`redmine`, `github`, `artia`) if you are not on Jira.
+
+### 4. Tools (7)
+
+This server is read/append only (least privilege). It does not create/edit/transition/assign/delete issues.
+
+| Tool | Purpose | Main args |
+|---|---|---|
+| `whoami` | Validate auth and return identity | none |
+| `search_tasks` | Find tasks | `query`, `native_query`, `max_results` |
+| `get_task` | Compact task view | `task_id` |
+| `add_comment` | Add comment | `task_id`, `comment` |
+| `log_work` | Log one work entry | `task_id`, `time_spent`, `started?`, `comment?` |
+| `log_work_batch` | Log multiple entries | `entries`, `skip_duplicates?` |
+| `get_worklogs` | List worklogs | `task_id`, `mine_only?` |
+
+Formats:
+- `time_spent`: `2:40` or `1h 30m` / `45m` / `2h`
+- `started`: `YYYY-MM-DD` or `YYYY-MM-DD HH:MM`
+
+### 5. Natural Language Examples
+
+- "log 1h30m on PROJ-123 with comment 'fix X' today"
+- "show my worklogs from PROJ-123"
+- "add comment 'fix deployed' to PROJ-123"
+
+For spreadsheet-like batch input, the agent should:
+1. Use the provided date.
+2. Parse each row into task + duration + comment.
+3. Show a preview before execution.
+4. Call `log_work_batch` and report skipped duplicates.
+
+### 6. Fast Auth Check
+
+```powershell
+uv run python -c "from src.services.provider_registry import registry; print(registry.get().whoami())"
+```
+
+---
+
+## Português
+
+Guia rápido do servidor MCP para lançar e conferir horas em Jira Cloud, Redmine, GitHub e Artia a partir de agentes de IA.
+
+### 1. Pré-requisitos
+
+- `uv` instalado:
+  `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`
+- Conta no provedor com permissão para apontar horas.
+
+### 2. Variáveis de ambiente
+
+- Jira: `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_DAILY_JQL` (opcional)
+- Redmine: `REDMINE_URL`, `REDMINE_API_KEY`
+- GitHub: `GITHUB_TOKEN`, `GITHUB_REPO` (opcional)
+- Artia: `ARTIA_CLIENT_ID`, `ARTIA_SECRET`, `ARTIA_ACCOUNT_ID`, `ARTIA_FOLDER_ID` (opcional)
+- Seletor: `WORK_PROVIDER` (`jira`, `redmine`, `github`, `artia`)
+
+Pode vir do `.env` ou do ambiente do cliente MCP.
+
+### 3. Linkar com agentes (Claude, Codex, Cline)
+
+Use a mesma ideia em qualquer cliente: iniciar este servidor por stdio com `uv --directory <repo> run server.py` e injetar variáveis `env`.
+
+- Claude Code: use `claude mcp add ...`
+- Claude Desktop: `claude_desktop_config.json` com `mcpServers`
+- Codex: entrada MCP com `command` + `args` + `env`
+- Cline: configuração MCP no VS Code com os mesmos campos
+
+Blocos de `env` por provedor (copiar/colar):
+
+- Esses blocos definem variáveis no processo/sessão atual do cliente.
+- São úteis para teste rápido e troca temporária de provedor.
+- Não é a mesma coisa que editar `.env`, que persiste valores em arquivo para reuso.
+- Se ambos existirem, variáveis enviadas pelo cliente MCP normalmente têm precedência.
+
+```json
+{
+  "WORK_PROVIDER": "jira",
+  "JIRA_BASE_URL": "https://your-company.atlassian.net",
+  "JIRA_EMAIL": "you@example.com",
+  "JIRA_API_TOKEN": "your-token"
+}
+```
+
+```json
+{
+  "WORK_PROVIDER": "redmine",
+  "REDMINE_URL": "https://redmine.example.com",
+  "REDMINE_API_KEY": "your-key"
+}
+```
+
+```json
+{
+  "WORK_PROVIDER": "github",
+  "GITHUB_TOKEN": "your-token",
+  "GITHUB_REPO": "owner/repo"
+}
+```
+
+```json
+{
+  "WORK_PROVIDER": "artia",
+  "ARTIA_CLIENT_ID": "your-client-id",
+  "ARTIA_SECRET": "your-secret",
+  "ARTIA_ACCOUNT_ID": "your-account-id",
+  "ARTIA_FOLDER_ID": "optional-folder-id"
+}
+```
+
+### 4. Tools
+
+`whoami`, `search_tasks`, `get_task`, `add_comment`, `log_work`, `log_work_batch`, `get_worklogs`.
+
+### 5. Teste rápido
+
+```powershell
+uv run python -c "from src.services.provider_registry import registry; print(registry.get().whoami())"
+```
