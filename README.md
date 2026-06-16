@@ -62,7 +62,7 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 ### Installation
 
 ```powershell
-git clone <repo-url> worklog-mcp
+git clone https://github.com/luizeduul/mcp-worklog-reg.git
 cd worklog-mcp
 cp .env.example .env
 uv sync
@@ -371,7 +371,7 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 ### Instalação
 
 ```powershell
-git clone <url-do-repo> worklog-mcp
+git clone https://github.com/luizeduul/mcp-worklog-reg.git
 cd worklog-mcp
 cp .env.example .env
 uv sync
