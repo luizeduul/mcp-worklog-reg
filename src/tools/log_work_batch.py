@@ -49,12 +49,15 @@ def log_work_batch(
             target_key, is_daily = provider.resolve_task_alias(
                 entry["issue_key"], started_jira
             )
+            comment = entry.get("comment", "")
+            if is_daily and not (comment or "").strip():
+                comment = entry["issue_key"].strip()
             normalized.append(
                 {
                     "task_id": target_key,
                     "seconds": seconds,
                     "started": started_jira,
-                    "comment": entry.get("comment", ""),
+                    "comment": comment,
                     "is_daily": is_daily,
                 }
             )

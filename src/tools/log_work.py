@@ -24,6 +24,8 @@ def log_work(
         started_jira = resolve_started(started)
         provider = get_provider()
         target_key, is_daily = provider.resolve_task_alias(issue_key, started_jira)
+        if is_daily and not (comment or "").strip():
+            comment = issue_key.strip()
         worklog = provider.log_work(target_key, seconds, started_jira, comment)
         output = {
             "id": worklog.id,
