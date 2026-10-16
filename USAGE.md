@@ -227,15 +227,17 @@ In Cline MCP settings, add a server entry using the same stdio command:
 
 Use your provider variables (`redmine`, `github`, `artia`) if you are not on Jira.
 
-### 4. Tools (7)
+### 4. Tools (9)
 
-This server is read/append only (least privilege). It does not create/edit/transition/assign/delete issues.
+Least privilege: it does not transition or delete issues. Create/edit (Jira only) return a preview and write only with `confirm=true`; edit only works on issues created by or assigned to you.
 
 | Tool | Purpose | Main args |
 |---|---|---|
 | `whoami` | Validate auth and return identity | none |
 | `search_tasks` | Find tasks | `query`, `native_query`, `max_results` |
 | `get_task` | Compact task view | `task_id` |
+| `create_issue` | Create issue (Jira) | `project`, `issue_type`, `summary`, `description?`, `labels?`, `priority?`, `parent?`, `assign_to_me?`, `confirm` |
+| `edit_issue` | Edit own/assigned issue (Jira) | `issue_key`, `summary?`, `description?`, `labels?`, `priority?`, `confirm` |
 | `add_comment` | Add comment | `task_id`, `comment` |
 | `log_work` | Log one work entry | `task_id`, `time_spent`, `started?`, `comment?` |
 | `log_work_batch` | Log multiple entries | `entries`, `skip_duplicates?` |

@@ -26,6 +26,8 @@ def register_all(mcp: Any) -> None:
     """Register every tool on the given FastMCP instance."""
     from src.tools import (
         add_comment,
+        create_issue,
+        edit_issue,
         get_task,
         get_worklogs,
         log_work,
@@ -38,6 +40,8 @@ def register_all(mcp: Any) -> None:
         whoami,
         search_tasks,
         get_task,
+        create_issue,
+        edit_issue,
         add_comment,
         log_work,
         log_work_batch,

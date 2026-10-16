@@ -8,6 +8,8 @@ import respx
 from src.providers.jira_provider import build_adf_comment
 from src.services.provider_registry import registry
 from src.tools.add_comment import add_comment as jira_add_comment
+from src.tools.create_issue import create_issue as jira_create_issue
+from src.tools.edit_issue import edit_issue as jira_edit_issue
 from src.tools.get_task import get_task as jira_get_issue
 from src.tools.get_worklogs import get_worklogs as jira_get_worklogs
 from src.tools.log_work import log_work as jira_log_work
@@ -422,3 +424,130 @@ def test_get_worklogs_mine_only_degrades_without_identity():
     output = jira_get_worklogs(issue_key="PROJ-355", mine_only=True)
     assert output["count"] == 2
     assert "note" in output
+
+
+def test_build_adf_comment_one_paragraph_per_line():
+    adf = build_adf_comment("first\n\nsecond")
+    assert [p["content"][0]["text"] for p in adf["content"]] == ["first", "second"]
+
+
+def test_create_issue_without_confirm_only_previews():
+    with respx.mock(assert_all_called=False) as mock:
+        route = mock.post(f"{BASE}/rest/api/3/issue")
+        output = jira_create_issue(project="proj", issue_type="Task", summary="New")
+    assert output["created"] is False
+    assert output["preview"]["project"] == "PROJ"
+    assert not route.called
+
+
+def test_create_issue_requires_summary():
+    output = jira_create_issue(project="PROJ", issue_type="Task", summary="  ", confirm=True)
+    assert "error" in output
+
+
+@respx.mock
+def test_create_issue_with_confirm_posts_fields():
+    route = respx.post(f"{BASE}/rest/api/3/issue").mock(
+        return_value=httpx.Response(201, json={"id": "1", "key": "PROJ-9"})
+    )
+    output = jira_create_issue(
+        project="PROJ",
+        issue_type="Task",
+        summary="New",
+        description="line 1\nline 2",
+        labels=["x"],
+        priority="High",
+        parent="PROJ-1",
+        confirm=True,
+    )
+    assert output["created"] is True
+    assert output["key"] == "PROJ-9"
+    assert output["url"] == f"{BASE}/browse/PROJ-9"
+    fields = _json.loads(route.calls.last.request.content)["fields"]
+    assert fields["project"] == {"key": "PROJ"}
+    assert fields["issuetype"] == {"name": "Task"}
+    assert fields["priority"] == {"name": "High"}
+    assert fields["parent"] == {"key": "PROJ-1"}
+    assert fields["labels"] == ["x"]
+    assert len(fields["description"]["content"]) == 2
+    assert "assignee" not in fields
+
+
+@respx.mock
+def test_create_issue_assign_to_me_uses_creator_account():
+    respx.post(f"{BASE}/rest/api/3/issue").mock(
+        return_value=httpx.Response(201, json={"id": "1", "key": "PROJ-9"})
+    )
+    respx.get(f"{BASE}/rest/api/3/issue/PROJ-9").mock(
+        return_value=httpx.Response(
+            200, json={"fields": {"creator": {"accountId": "me-1", "displayName": "Me"}}}
+        )
+    )
+    assign = respx.put(f"{BASE}/rest/api/3/issue/PROJ-9").mock(return_value=httpx.Response(204))
+    output = jira_create_issue(
+        project="PROJ", issue_type="Task", summary="New", assign_to_me=True, confirm=True
+    )
+    assert output["assigned_to"] == "Me"
+    body = _json.loads(assign.calls.last.request.content)
+    assert body["fields"]["assignee"] == {"accountId": "me-1"}
+
+
+def test_edit_issue_requires_some_change():
+    output = jira_edit_issue(issue_key="PROJ-1")
+    assert "error" in output
+
+
+def test_edit_issue_rejects_invalid_key():
+    output = jira_edit_issue(issue_key="PROJ-1 OR 1=1", summary="x", confirm=True)
+    assert "error" in output
+
+
+@respx.mock
+def test_edit_issue_blocked_when_not_mine():
+    search = respx.post(f"{BASE}/rest/api/3/search/jql").mock(
+        return_value=httpx.Response(200, json={"issues": []})
+    )
+    edit = respx.put(f"{BASE}/rest/api/3/issue/PROJ-1")
+    output = jira_edit_issue(issue_key="proj-1", summary="x", confirm=True)
+    assert "error" in output
+    jql = _json.loads(search.calls.last.request.content)["jql"]
+    assert 'key = "PROJ-1"' in jql
+    assert "creator = currentUser()" in jql
+    assert "assignee = currentUser()" in jql
+    assert not edit.called
+
+
+@respx.mock
+def test_edit_issue_without_confirm_previews_current_values():
+    respx.post(f"{BASE}/rest/api/3/search/jql").mock(
+        return_value=httpx.Response(200, json={"issues": [{"key": "PROJ-1"}]})
+    )
+    respx.get(f"{BASE}/rest/api/3/issue/PROJ-1").mock(
+        return_value=httpx.Response(200, json={"key": "PROJ-1", "fields": {"summary": "Old"}})
+    )
+    edit = respx.put(f"{BASE}/rest/api/3/issue/PROJ-1")
+    output = jira_edit_issue(issue_key="PROJ-1", summary="New")
+    assert output["updated"] is False
+    assert output["current"] == {"summary": "Old"}
+    assert output["changes"] == {"summary": "New"}
+    assert not edit.called
+
+
+@respx.mock
+def test_edit_issue_with_confirm_puts_only_changed_fields():
+    respx.post(f"{BASE}/rest/api/3/search/jql").mock(
+        return_value=httpx.Response(200, json={"issues": [{"key": "PROJ-1"}]})
+    )
+    edit = respx.put(f"{BASE}/rest/api/3/issue/PROJ-1").mock(return_value=httpx.Response(204))
+    output = jira_edit_issue(issue_key="PROJ-1", priority="Low", labels=[], confirm=True)
+    assert output["updated"] is True
+    fields = _json.loads(edit.calls.last.request.content)["fields"]
+    assert fields == {"priority": {"name": "Low"}, "labels": []}
+
+
+def test_no_delete_issue_tool_registered():
+    from src.server import mcp
+
+    names = {tool.name for tool in mcp._tool_manager.list_tools()}
+    assert {"jira_create_issue", "jira_edit_issue"} <= names
+    assert not any("delete" in name for name in names)

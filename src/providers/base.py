@@ -18,6 +18,10 @@ class TaskProvider(Protocol):
 
     Optional methods (gated by :attr:`capabilities`):
     :meth:`add_comment`, :meth:`log_work`, :meth:`get_worklogs`.
+
+    Optional, Jira only today: :meth:`create_task`, :meth:`ensure_editable`,
+    :meth:`update_task` (BaseProvider raises NotImplementedError). There is
+    deliberately no delete.
     """
 
     @property
@@ -153,4 +157,29 @@ class BaseProvider:
     def get_worklogs(self, task_id: str) -> list[Worklog]:
         raise NotImplementedError(
             f"Provider '{self.name}' does not support worklogs."
+        )
+
+    def create_task(
+        self,
+        project: str,
+        issue_type: str,
+        summary: str,
+        description: str = "",
+        labels: list[str] | None = None,
+        priority: str = "",
+        parent: str = "",
+        assign_to_me: bool = False,
+    ) -> dict[str, Any]:
+        raise NotImplementedError(
+            f"Provider '{self.name}' does not support creating tasks."
+        )
+
+    def ensure_editable(self, task_id: str) -> str:
+        raise NotImplementedError(
+            f"Provider '{self.name}' does not support editing tasks."
+        )
+
+    def update_task(self, task_id: str, changes: dict[str, Any]) -> None:
+        raise NotImplementedError(
+            f"Provider '{self.name}' does not support editing tasks."
         )

@@ -1,12 +1,15 @@
 """MCP server for work management (Jira Cloud today, pluggable by provider).
 
-Read/append only by design (least privilege): it can search and read issues,
-read and log worklogs, and add comments. It CANNOT create, edit, transition,
-assign, or delete issues, comments, or worklogs.
+Least privilege: it can search, read, create, and edit issues, read and log
+worklogs, and add comments. Create/edit only run with ``confirm=true`` (the
+default returns a preview), and edit is limited to issues created by or
+assigned to the current user. It CANNOT transition or delete issues, comments,
+or worklogs.
 
 Tools (all prefixed ``jira_`` for the current Jira provider):
-- jira_whoami, jira_search_issues, jira_get_issue, jira_add_comment,
-  jira_log_work, jira_log_work_batch, jira_get_worklogs.
+- jira_whoami, jira_search_issues, jira_get_issue, jira_create_issue,
+  jira_edit_issue, jira_add_comment, jira_log_work, jira_log_work_batch,
+  jira_get_worklogs.
 
 Config is loaded by :mod:`src.config` from a project ``.env`` (optional) or the
 MCP client environment: JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN. Optional:

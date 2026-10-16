@@ -28,13 +28,15 @@ MCP client -> stdio JSON-RPC -> worklog-mcp -> HTTPS -> Task Provider API
 
 ### Tools
 
-This server exposes exactly seven tools. Availability and behavior depend on the selected provider and its capabilities. By design, all tools are read/append only (least privilege) — no ability to create, edit, transition, assign, or delete issues, comments, or worklogs.
+This server exposes exactly nine tools. Availability and behavior depend on the selected provider and its capabilities. By design (least privilege) there is no ability to transition or delete issues, comments, or worklogs. Creating and editing issues (Jira only) is gated: the default call only returns a preview and nothing is written until `confirm=true`; editing is limited to issues created by or assigned to the current user.
 
 | Tool | Purpose | Notes |
 |---|---|---|
 | `whoami` | Validates authentication and returns the current identity when the provider allows it. | Available on all providers. |
 | `search_tasks` | Searches tasks. No args returns your open/assigned tasks; `query` does text search; `native_query` runs provider-specific syntax (JQL for Jira, etc.). | Available on all providers. |
 | `get_task` | Returns a compact view of one task (key, summary, status, type, assignee, priority, labels, description text). | Available on all providers. |
+| `create_issue` | Creates an issue (project, type, summary, description, labels, priority, parent, `assign_to_me`). Without `confirm=true` it only returns the preview. | Jira only. Token needs `write:issue:jira`. |
+| `edit_issue` | Edits summary, description, labels or priority. Blocked unless the issue was created by or is assigned to you (`creator`/`assignee = currentUser()`). Without `confirm=true` it returns current × new values. | Jira only. Token needs `write:issue:jira`. |
 | `add_comment` | Adds a comment to a task. Plain text is converted to provider-specific format (ADF for Jira, markdown for GitHub, etc.). | Depends on provider capabilities. |
 | `log_work` | Logs one worklog. `time_spent` accepts `2:40` or `1h 30m`. Provider-specific extras like `issue_key="daily"` (Jira) may apply. | Depends on provider capabilities. |
 | `log_work_batch` | Logs multiple worklogs in one call. Skips entries already logged at the same date/time and returns them for confirmation. | Depends on provider capabilities. |
@@ -241,7 +243,7 @@ The required variables for your chosen provider are read from `.env` (optional) 
 
 ### Security
 
-- **Least privilege:** the server is read/append only. It cannot create, edit, transition, assign, or delete tasks, comments, or worklogs. No tool maps to a destructive endpoint.
+- **Least privilege:** the server cannot transition or delete tasks, comments, or worklogs. No tool maps to a destructive endpoint. Issue create/edit only write with `confirm=true`, and edit is restricted to your own or assigned issues.
 - **Provider URLs validated:** Only HTTPS URLs are accepted. Provider URLs (Jira, Redmine, etc.) are validated for correctness.
 - **Credentials not stored in code:** They come from environment variables; `.env` is optional and ignored by Git.
 - **One shared, pooled HTTP client** with fixed timeout and connection limits per provider instance.
@@ -288,7 +290,7 @@ worklog-mcp/
 
 - **Provider interface** (`src/providers/base.py`): `TaskProvider` protocol defines the contract. Each provider implements required methods (`whoami`, `search_tasks`, `get_task`) and optional ones gated by `capabilities` (`add_comment`, `log_work`, `get_worklogs`).
 - **Provider registry** (`src/services/provider_registry.py`): Lazily instantiates and caches provider instances based on `WORK_PROVIDER` env variable.
-- **Tools** (`src/tools/`): Seven FastMCP tools that call the active provider through the registry.
+- **Tools** (`src/tools/`): Nine FastMCP tools that call the active provider through the registry.
 
 ### Troubleshooting
 
@@ -337,13 +339,15 @@ Cliente MCP -> stdio JSON-RPC -> worklog-mcp -> HTTPS -> API do Provedor
 
 ### Tools
 
-Este servidor expõe exatamente sete tools. A disponibilidade e comportamento dependem do provedor selecionado e suas capacidades. Por design, todas as tools são somente leitura/append (menor privilégio) — não conseguem criar, editar, transicionar, atribuir nem apagar tarefas, comentários ou worklogs.
+Este servidor expõe exatamente nove tools. A disponibilidade e comportamento dependem do provedor selecionado e suas capacidades. Por design (menor privilégio) não há como transicionar nem apagar tarefas, comentários ou worklogs. Criar e editar tarefa (só Jira) tem trava: a chamada padrão só devolve o preview e nada é gravado sem `confirm=true`; editar só vale para tarefa criada por você ou atribuída a você.
 
 | Tool | Finalidade | Notas |
 |---|---|---|
 | `whoami` | Valida a autenticação e retorna a identidade atual quando o provedor permite. | Disponível em todos os provedores. |
 | `search_tasks` | Busca tarefas. Sem args retorna suas abertas/atribuídas; `query` faz busca textual; `native_query` executa sintaxe específica do provedor (JQL para Jira, etc.). | Disponível em todos os provedores. |
 | `get_task` | Retorna uma visão compacta de uma tarefa (chave, resumo, status, tipo, responsável, prioridade, labels, texto da descrição). | Disponível em todos os provedores. |
+| `create_issue` | Cria tarefa (projeto, tipo, resumo, descrição, labels, prioridade, pai, `assign_to_me`). Sem `confirm=true` só devolve o preview. | Só Jira. Token precisa de `write:issue:jira`. |
+| `edit_issue` | Edita resumo, descrição, labels ou prioridade. Bloqueia se a tarefa não foi criada por você nem está atribuída a você (`creator`/`assignee = currentUser()`). Sem `confirm=true` devolve atual × novo. | Só Jira. Token precisa de `write:issue:jira`. |
 | `add_comment` | Adiciona um comentário a uma tarefa. Texto simples é convertido para formato específico do provedor (ADF para Jira, markdown para GitHub, etc.). | Depende das capacidades do provedor. |
 | `log_work` | Lança um worklog. `time_spent` aceita `2:40` ou `1h 30m`. Extras específicos do provedor como `issue_key="daily"` (Jira) podem ser aplicados. | Depende das capacidades do provedor. |
 | `log_work_batch` | Lança vários worklogs em uma chamada. Pula lançamentos já existentes no mesmo dia/horário e os devolve para confirmação. | Depende das capacidades do provedor. |
@@ -550,7 +554,7 @@ As variáveis obrigatórias para seu provedor escolhido são lidas do `.env` (op
 
 ### Segurança
 
-- **Menor privilégio:** o servidor é somente leitura/append. Não cria, edita, transiciona, atribui nem apaga tarefas, comentários ou worklogs. Nenhuma tool aponta para um endpoint destrutivo.
+- **Menor privilégio:** o servidor não transiciona nem apaga tarefas, comentários ou worklogs. Nenhuma tool aponta para um endpoint destrutivo. Criar/editar tarefa só grava com `confirm=true`, e editar só vale para tarefa sua ou atribuída a você.
 - **URLs dos provedores validadas:** Apenas HTTPS. URLs dos provedores (Jira, Redmine, etc.) são validadas.
 - **Credenciais não ficam no código:** Vêm de variáveis de ambiente; `.env` é opcional e ignorado pelo Git.
 - **Um único `httpx.Client` compartilhado** com pool, timeout fixo e limites de conexão por instância de provedor.
@@ -597,7 +601,7 @@ worklog-mcp/
 
 - **Interface de provedor** (`src/providers/base.py`): protocolo `TaskProvider` define o contrato. Cada provedor implementa métodos obrigatórios (`whoami`, `search_tasks`, `get_task`) e opcionais controlados por `capabilities` (`add_comment`, `log_work`, `get_worklogs`).
 - **Registry de provedor** (`src/services/provider_registry.py`): instancia e cacheia preguiçosamente os provedores baseado na variável `WORK_PROVIDER`.
-- **Tools** (`src/tools/`): Sete tools FastMCP que chamam o provedor ativo através do registry.
+- **Tools** (`src/tools/`): Nove tools FastMCP que chamam o provedor ativo através do registry.
 
 ### Troubleshooting
 

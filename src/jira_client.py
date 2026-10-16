@@ -1,8 +1,8 @@
 """HTTP client for Jira Cloud REST v3. This module does not know about MCP.
 
-This client is intentionally read/append only: it can search, read issues and
-worklogs, log work, and add comments. It exposes no method that can create,
-edit, transition, or delete issues, comments, or worklogs.
+It can search, read, create, and edit issues, read and log worklogs, and add
+comments. It exposes no method that can transition or delete issues, comments,
+or worklogs.
 """
 
 from __future__ import annotations
@@ -178,14 +178,24 @@ class JiraClient:
         }
         return self._request("POST", f"{JIRA_API}/search/jql", json_body=body)
 
-    def get_issue(self, issue_key: str) -> dict[str, Any]:
+    def get_issue(
+        self,
+        issue_key: str,
+        fields: str = "summary,status,issuetype,assignee,priority,labels,description,updated",
+    ) -> dict[str, Any]:
         """Read one issue, requesting only the fields the tools surface."""
         return self._request(
             "GET",
             f"{JIRA_API}/issue/{issue_key}",
-            params={
-                "fields": "summary,status,issuetype,assignee,priority,labels,description,updated"
-            },
+            params={"fields": fields},
+        )
+
+    def create_issue(self, fields: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", f"{JIRA_API}/issue", json_body={"fields": fields})
+
+    def edit_issue(self, issue_key: str, fields: dict[str, Any]) -> None:
+        self._request(
+            "PUT", f"{JIRA_API}/issue/{issue_key}", json_body={"fields": fields}
         )
 
     def get_worklogs(self, issue_key: str) -> dict[str, Any]:

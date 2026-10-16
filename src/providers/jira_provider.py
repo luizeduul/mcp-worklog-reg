@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime
 from typing import Any
 
@@ -29,13 +30,18 @@ _DAILY_JQL_EXAMPLE = (
 )
 
 
+_ISSUE_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]+-\d+$")
+
+
 def build_adf_comment(text: str) -> dict[str, Any]:
-    """Build a one-paragraph Atlassian Document Format comment."""
+    """Build an Atlassian Document Format doc with one paragraph per line."""
+    lines = [line for line in text.splitlines() if line.strip()] or [text]
     return {
         "type": "doc",
         "version": 1,
         "content": [
-            {"type": "paragraph", "content": [{"type": "text", "text": text}]}
+            {"type": "paragraph", "content": [{"type": "text", "text": line}]}
+            for line in lines
         ],
     }
 
@@ -228,6 +234,81 @@ class JiraProvider(BaseProvider):
             description=_adf_to_text(fields.get("description")),
             updated=fields.get("updated", ""),
         )
+
+    # -- optional (create + edit) -------------------------------------------
+
+    def create_task(
+        self,
+        project: str,
+        issue_type: str,
+        summary: str,
+        description: str = "",
+        labels: list[str] | None = None,
+        priority: str = "",
+        parent: str = "",
+        assign_to_me: bool = False,
+    ) -> dict[str, Any]:
+        fields: dict[str, Any] = {
+            "project": {"key": project},
+            "issuetype": {"name": issue_type},
+            "summary": summary,
+        }
+        if description.strip():
+            fields["description"] = build_adf_comment(description)
+        if labels:
+            fields["labels"] = labels
+        if priority.strip():
+            fields["priority"] = {"name": priority}
+        if parent.strip():
+            fields["parent"] = {"key": parent}
+        created = self._client.create_issue(fields)
+        key = created.get("key", "")
+        output: dict[str, Any] = {
+            "key": key,
+            "url": f"{self._client.base_url}/browse/{key}",
+        }
+        if assign_to_me:
+            # Scoped tokens cannot read /myself, so the creator of the issue just
+            # created is the reliable source of our own accountId.
+            try:
+                creator = (
+                    self._client.get_issue(key, fields="creator").get("fields") or {}
+                ).get("creator") or {}
+                self._client.edit_issue(
+                    key, {"assignee": {"accountId": creator.get("accountId")}}
+                )
+                output["assigned_to"] = creator.get("displayName", "")
+            except JiraError as exc:
+                output["warning"] = (
+                    f"Issue created, but assigning it to you failed: {exc.message}"
+                )
+        return output
+
+    def ensure_editable(self, task_id: str) -> str:
+        """Allow edits only on issues created by or assigned to the current user."""
+        key = (task_id or "").strip().upper()
+        if not _ISSUE_KEY_RE.match(key):
+            raise JiraError(f"Invalid issue key: '{task_id}'. Use PROJ-123.")
+        jql = f'key = "{key}" AND (creator = currentUser() OR assignee = currentUser())'
+        if not self._client.search_issues(jql, 1).get("issues"):
+            raise JiraError(
+                f"{key} was not created by you and is not assigned to you; "
+                "editing is blocked."
+            )
+        return key
+
+    def update_task(self, task_id: str, changes: dict[str, Any]) -> None:
+        key = self.ensure_editable(task_id)
+        fields: dict[str, Any] = {}
+        if "summary" in changes:
+            fields["summary"] = changes["summary"]
+        if "description" in changes:
+            fields["description"] = build_adf_comment(changes["description"])
+        if "labels" in changes:
+            fields["labels"] = changes["labels"]
+        if "priority" in changes:
+            fields["priority"] = {"name": changes["priority"]}
+        self._client.edit_issue(key, fields)
 
     # -- optional (comments + worklogs) -------------------------------------
 
